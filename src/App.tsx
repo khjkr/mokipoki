@@ -609,7 +609,7 @@ export default function App() {
         ) : (
 
         // ==============================================================
-        /* 2. AUTHENTICATED REAL APP SHELL */
+        // 2. AUTHENTICATED REAL APP SHELL
         // ==============================================================
           <>
             {/* TOP HEADER */}
