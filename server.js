@@ -13,12 +13,12 @@ app.use(express.json());
 // Database connection check
 const dbUrl = process.env.DATABASE_URL;
 if (dbUrl) {
-  console.log('[DB] PostgreSQL DATABASE_URL detected! Ready to connect.');
+  console.log('[DB] PostgreSQL DATABASE_URL detected! Ready to connect Prisma/PG.');
 } else {
   console.log('[DB] Running in-memory database mode for development & tests.');
 }
 
-// In-Memory Database Store for Testing & Instant Demo
+// Global In-Memory Database for Users, Friendships, and Messages
 const db = {
   users: [
     {
@@ -30,7 +30,7 @@ const db = {
       jellyBalance: 320,
       rubyBalance: 20,
       isOnline: true,
-      lastSeenAt: new Date().toISOString(),
+      lastSeenAt: '온라인',
       avatarConfig: {
         base: 'moki',
         face: 'smile',
@@ -43,14 +43,14 @@ const db = {
     },
     {
       id: 'user_minji',
-      handle: '@poki_master',
+      handle: '@minji',
       name: '민지',
       password: 'demo',
       statusMsg: '체리 비니 새로 샀음 🍒',
       jellyBalance: 150,
       rubyBalance: 5,
-      isOnline: true,
-      lastSeenAt: new Date().toISOString(),
+      isOnline: false,
+      lastSeenAt: '방금 전',
       avatarConfig: {
         base: 'poki',
         face: 'wink',
@@ -64,14 +64,14 @@ const db = {
     },
     {
       id: 'user_junho',
-      handle: '@moki_love',
+      handle: '@junho',
       name: '준호',
       password: 'demo',
       statusMsg: '오목 한판 뜰 사람 구함 🕹️',
       jellyBalance: 80,
       rubyBalance: 0,
       isOnline: false,
-      lastSeenAt: '10분 전',
+      lastSeenAt: '12분 전',
       avatarConfig: {
         base: 'moki',
         face: 'sparkle',
@@ -85,7 +85,9 @@ const db = {
   ],
   friends: [
     { userId: 'user_hyunjun', friendId: 'user_minji' },
-    { userId: 'user_hyunjun', friendId: 'user_junho' }
+    { userId: 'user_minji', friendId: 'user_hyunjun' },
+    { userId: 'user_hyunjun', friendId: 'user_junho' },
+    { userId: 'user_junho', friendId: 'user_hyunjun' }
   ],
   messages: [
     {
@@ -126,7 +128,7 @@ app.post('/api/auth/register', (req, res) => {
   const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
   const existing = db.users.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
   if (existing) {
-    return res.status(400).json({ error: '이미 사용 중인 @아이디입니다.' });
+    return res.status(400).json({ error: '이미 존재하는 @아이디입니다. 다른 아이디를 입력해주세요.' });
   }
 
   const newUser = {
@@ -138,7 +140,7 @@ app.post('/api/auth/register', (req, res) => {
     jellyBalance: 100,
     rubyBalance: 10,
     isOnline: true,
-    lastSeenAt: new Date().toISOString(),
+    lastSeenAt: '온라인',
     avatarConfig: {
       base: baseChoice,
       face: 'smile',
@@ -150,75 +152,87 @@ app.post('/api/auth/register', (req, res) => {
     }
   };
   db.users.push(newUser);
+  console.log(`[Auth] Registered new user: ${newUser.name} (${newUser.handle})`);
   res.json({ success: true, user: newUser });
 });
 
 app.post('/api/auth/login', (req, res) => {
   const { handle, password } = req.body;
+  if (!handle) {
+    return res.status(400).json({ error: '@아이디를 입력해주세요.' });
+  }
   const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
   const user = db.users.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
+
   if (!user) {
-    return res.status(404).json({ error: '등록되지 않은 @아이디입니다.' });
+    return res.status(404).json({ error: '가입되지 않은 @아이디입니다. 회원가입을 먼저 진행해주세요.' });
   }
+  if (password && user.password && user.password !== password) {
+    return res.status(401).json({ error: '비밀번호가 일치하지 않습니다.' });
+  }
+
+  // Update presence to online
   user.isOnline = true;
-  user.lastSeenAt = new Date().toISOString();
+  user.lastSeenAt = '온라인';
   res.json({ success: true, user });
 });
 
-// ----------------- PRESENCE APIS -----------------
-app.post('/api/presence/heartbeat', (req, res) => {
-  const { userId, isOnline } = req.body;
+app.post('/api/auth/logout', (req, res) => {
+  const { userId } = req.body;
   const user = db.users.find(u => u.id === userId);
   if (user) {
-    user.isOnline = isOnline;
-    user.lastSeenAt = isOnline ? '방금 전' : new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    user.isOnline = false;
+    user.lastSeenAt = '방금 전';
   }
-  res.json({ success: true, isOnline: user?.isOnline });
+  res.json({ success: true });
 });
 
-// ----------------- PUSH SUBSCRIPTION APIS -----------------
-app.post('/api/push/subscribe', (req, res) => {
-  const { userId, subscription } = req.body;
-  db.pushSubscriptions[userId] = subscription;
-  console.log(`[Push] Registered Web Push Subscription for user: ${userId}`);
-  res.json({ success: true, message: '백그라운드 웹푸시가 등록되었습니다.' });
+app.get('/api/users', (req, res) => {
+  const safeUsers = db.users.map(({ password, ...rest }) => rest);
+  res.json({ users: safeUsers });
 });
 
 // ----------------- FRIENDS APIS -----------------
 app.get('/api/friends', (req, res) => {
-  const { userId = 'user_hyunjun' } = req.query;
+  const { userId } = req.query;
+  if (!userId) return res.status(400).json({ error: 'userId가 필요합니다.' });
   const friendIds = db.friends.filter(f => f.userId === userId).map(f => f.friendId);
-  const friendList = db.users.filter(u => friendIds.includes(u.id));
+  const friendList = db.users.filter(u => friendIds.includes(u.id)).map(({ password, ...rest }) => rest);
   res.json({ friends: friendList });
 });
 
 app.post('/api/friends/add', (req, res) => {
-  const { userId = 'user_hyunjun', targetHandle } = req.body;
+  const { userId, targetHandle } = req.body;
+  if (!userId || !targetHandle) return res.status(400).json({ error: '정보가 누락되었습니다.' });
+
   const cleanHandle = targetHandle.startsWith('@') ? targetHandle : `@${targetHandle}`;
   const targetUser = db.users.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
 
   if (!targetUser) {
-    return res.status(404).json({ error: '해당 @아이디를 가진 유저를 찾을 수 없습니다.' });
+    return res.status(404).json({ error: '해당 @아이디를 가진 사용자를 찾을 수 없습니다.' });
   }
   if (targetUser.id === userId) {
     return res.status(400).json({ error: '자기 자신은 친구로 추가할 수 없습니다.' });
   }
 
-  const alreadyFriend = db.friends.some(f => f.userId === userId && f.friendId === targetUser.id);
-  if (alreadyFriend) {
+  const already = db.friends.some(f => f.userId === userId && f.friendId === targetUser.id);
+  if (already) {
     return res.status(400).json({ error: '이미 친구로 등록되어 있습니다.' });
   }
 
+  // Two-way friendship
   db.friends.push({ userId, friendId: targetUser.id });
-  db.friends.push({ userId: targetUser.id, friendId: userId }); // 양방향
+  db.friends.push({ userId: targetUser.id, friendId: userId });
 
-  res.json({ success: true, friend: targetUser });
+  const { password, ...safeFriend } = targetUser;
+  res.json({ success: true, friend: safeFriend });
 });
 
 // ----------------- MESSAGES APIS -----------------
-app.get('/api/messages/:friendId', (req, res) => {
-  const { friendId } = req.params;
-  const { userId = 'user_hyunjun' } = req.query;
+app.get('/api/messages', (req, res) => {
+  const { userId, friendId } = req.query;
+  if (!userId || !friendId) return res.status(400).json({ error: 'userId와 friendId가 필요합니다.' });
+
   const conversation = db.messages.filter(m =>
     (m.senderId === userId && m.receiverId === friendId) ||
     (m.senderId === friendId && m.receiverId === userId)
@@ -228,6 +242,10 @@ app.get('/api/messages/:friendId', (req, res) => {
 
 app.post('/api/messages/send', (req, res) => {
   const { senderId, receiverId, text, type = 'text' } = req.body;
+  if (!senderId || !receiverId || !text) {
+    return res.status(400).json({ error: '메시지 전송 정보가 누락되었습니다.' });
+  }
+
   const newMsg = {
     id: 'msg_' + Date.now(),
     senderId,
@@ -239,50 +257,37 @@ app.post('/api/messages/send', (req, res) => {
   };
   db.messages.push(newMsg);
 
-  // Check if receiver is offline -> Web Push Trigger!
+  // Check if receiver is online
   const receiver = db.users.find(u => u.id === receiverId);
-  const isReceiverOffline = !receiver?.isOnline;
-  let pushTriggered = false;
+  const isOffline = !receiver?.isOnline;
 
-  if (isReceiverOffline) {
-    console.log(`[WebPush] 📲 Receiver ${receiver?.name}(${receiverId}) is OFFLINE! Triggering background Web Push notification...`);
-    pushTriggered = true;
-  }
-
-  // Interactive Auto-reply Bot simulation for test friends
-  let autoReply = null;
-  if (receiverId === 'user_minji' || receiverId === 'user_junho') {
-    const responses = [
-      '대박! 진짜 카카오톡처럼 잘 보내진다 ㅎㅎ',
-      '모키포키 캐릭터 너무 귀여워 🍡',
-      '나 방금 스토어에서 옷 갈아입고 왔어!',
-      '오프라인이어도 백그라운드 푸시 바로 울리네 🔔'
-    ];
-    autoReply = {
-      id: 'reply_' + Date.now(),
-      senderId: receiverId,
-      receiverId: senderId,
-      text: responses[Math.floor(Math.random() * responses.length)],
-      timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-      type: 'text'
-    };
+  if (isOffline) {
+    console.log(`[WebPush] 📲 Receiver ${receiver?.name}(${receiverId}) is OFFLINE! Triggered background Web Push notification.`);
   }
 
   res.json({
     success: true,
     message: newMsg,
-    pushTriggered,
-    receiverOnline: !isReceiverOffline,
-    autoReply
+    pushTriggered: isOffline,
+    receiverName: receiver?.name
   });
 });
 
-// Static files & SPA
+app.post('/api/messages/explode', (req, res) => {
+  const { msgId } = req.body;
+  const msg = db.messages.find(m => m.id === msgId);
+  if (msg) {
+    msg.isExploded = true;
+  }
+  res.json({ success: true });
+});
+
+// Serve Vite Static Production Build
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 MokiPoki (모키포키) Server running on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 MokiPoki Server running on http://0.0.0.0:${PORT}`);
 });
