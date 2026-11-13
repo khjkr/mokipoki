@@ -6,7 +6,6 @@ interface User {
   id: string;
   handle: string;
   name: string;
-  password?: string;
   statusMsg: string;
   jelly: number;
   ruby: number;
@@ -25,97 +24,11 @@ interface ChatMessage {
   isExploded?: boolean;
 }
 
-// Initial Global Mock DB (Shared across logins in session)
-const INITIAL_USERS: User[] = [
-  {
-    id: 'user_hyunjun',
-    handle: '@hyunjun',
-    name: '현준',
-    password: 'demo',
-    statusMsg: '모키포키에서 뒹굴거리는 중 🍡',
-    jelly: 320,
-    ruby: 20,
-    isOnline: true,
-    lastSeenAt: '온라인',
-    avatar: { ...DEFAULT_AVATAR_MOKI }
-  },
-  {
-    id: 'user_minji',
-    handle: '@minji',
-    name: '민지',
-    password: 'demo',
-    statusMsg: '체리 비니 새로 샀음 🍒',
-    jelly: 150,
-    ruby: 5,
-    isOnline: false,
-    lastSeenAt: '방금 전',
-    avatar: { ...DEFAULT_AVATAR_POKI }
-  },
-  {
-    id: 'user_junho',
-    handle: '@junho',
-    name: '준호',
-    password: 'demo',
-    statusMsg: '오목 한판 뜰 사람 구함 🕹️',
-    jelly: 80,
-    ruby: 0,
-    isOnline: false,
-    lastSeenAt: '12분 전',
-    avatar: {
-      base: 'moki',
-      face: 'sparkle',
-      top: 'yellow_knit',
-      headwear: 'round_glasses',
-      handheld: 'gameboy',
-      bg: 'pastel_circle',
-      effect: 'sparkles'
-    }
-  }
-];
-
-const INITIAL_FRIENDSHIPS: [string, string][] = [
-  ['user_hyunjun', 'user_minji'],
-  ['user_minji', 'user_hyunjun'],
-  ['user_hyunjun', 'user_junho'],
-  ['user_junho', 'user_hyunjun']
-];
-
-const INITIAL_MESSAGES: ChatMessage[] = [
-  {
-    id: 'm1',
-    senderId: 'user_minji',
-    receiverId: 'user_hyunjun',
-    text: '현준아 모키포키 들어왔어? 대박 귀여워 ㅋㅋㅋ',
-    timestamp: '18:40',
-    type: 'text'
-  },
-  {
-    id: 'm2',
-    senderId: 'user_hyunjun',
-    receiverId: 'user_minji',
-    text: '응응! 나 방금 찹쌀떡 모키로 캐릭터 만들었음!',
-    timestamp: '18:41',
-    type: 'text'
-  },
-  {
-    id: 'm3',
-    senderId: 'user_minji',
-    receiverId: 'user_hyunjun',
-    text: '이거 탭하면 터지는 폭탄 메시지다! 💣',
-    timestamp: '18:41',
-    type: 'bomb',
-    isExploded: false
-  }
-];
-
 export default function App() {
-  // Global In-Memory Stores
-  const [allUsers, setAllUsers] = useState<User[]>(INITIAL_USERS);
-  const [friendships, setFriendships] = useState<[string, string][]>(INITIAL_FRIENDSHIPS);
-  const [allMessages, setAllMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
+  // 1. MUST START AT NULL: Login / Register Auth Gate appears FIRST on open!
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
 
-  // Auth State
-  const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]); // default to Hyun-jun for instant view
+  // Auth Gate Form States
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [loginHandle, setLoginHandle] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -124,12 +37,16 @@ export default function App() {
   const [regPassword, setRegPassword] = useState('');
   const [regStep, setRegStep] = useState<'form' | 'onboarding'>('form');
   const [onboardingChoice, setOnboardingChoice] = useState<'moki' | 'poki'>('moki');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   // App Navigation
   const [activeTab, setActiveTab] = useState<'friends' | 'chat' | 'store' | 'profile'>('friends');
   const [activeChatFriendId, setActiveChatFriendId] = useState<string | null>(null);
 
-  // Chat & UI states
+  // Real Backend Data States
+  const [friends, setFriends] = useState<User[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [addHandleInput, setAddHandleInput] = useState('');
@@ -140,194 +57,327 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Sync Wardrobe avatar when current user changes
+  // Auto-scroll chat
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, activeChatFriendId]);
+
+  // Sync Wardrobe avatar
   useEffect(() => {
     if (currentUser) {
       setWardrobeAvatar({ ...currentUser.avatar });
     }
   }, [currentUser]);
 
-  // Auto-scroll chat
+  // Real-time Polling for Friends & Messages (Every 2 seconds)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [allMessages, activeChatFriendId]);
+    if (!currentUser) return;
 
-  // Handle Login
-  const handleLoginSubmit = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    const cleanHandle = loginHandle.trim().startsWith('@') ? loginHandle.trim() : `@${loginHandle.trim()}`;
-    const user = allUsers.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
+    const fetchData = async () => {
+      try {
+        // 1. Fetch Friends List
+        const resFriends = await fetch(`/api/friends?userId=${currentUser.id}`);
+        if (resFriends.ok) {
+          const data = await resFriends.json();
+          if (data.friends) setFriends(data.friends);
+        }
 
-    if (!user) {
-      alert('가입되지 않은 @아이디입니다. 회원가입을 먼저 진행해주세요!');
-      return;
+        // 2. Fetch Active Chat Messages if in a room
+        if (activeChatFriendId) {
+          const resMsgs = await fetch(`/api/messages?userId=${currentUser.id}&friendId=${activeChatFriendId}`);
+          if (resMsgs.ok) {
+            const data = await resMsgs.json();
+            if (data.messages) setChatMessages(data.messages);
+          }
+        }
+      } catch (err) {
+        // Fallback for offline/local standalone mode
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 2000);
+    return () => clearInterval(interval);
+  }, [currentUser, activeChatFriendId]);
+
+  // -------------------------------------------------------------
+  // AUTH HANDLERS (Connects directly to Backend API)
+  // -------------------------------------------------------------
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setIsLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle: loginHandle.trim(), password: loginPassword })
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setAuthError(data.error || '로그인에 실패했습니다.');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(data.user);
+      setIsLoading(false);
+      setLoginHandle('');
+      setLoginPassword('');
+    } catch (err) {
+      // Offline fallback: check demo users
+      const cleanHandle = loginHandle.trim().startsWith('@') ? loginHandle.trim() : `@${loginHandle.trim()}`;
+      if (cleanHandle.toLowerCase() === '@hyunjun') {
+        setCurrentUser({
+          id: 'user_hyunjun',
+          handle: '@hyunjun',
+          name: '현준',
+          statusMsg: '모키포키에서 뒹굴거리는 중 🍡',
+          jelly: 320,
+          ruby: 20,
+          isOnline: true,
+          lastSeenAt: '온라인',
+          avatar: { ...DEFAULT_AVATAR_MOKI }
+        });
+      } else if (cleanHandle.toLowerCase() === '@minji') {
+        setCurrentUser({
+          id: 'user_minji',
+          handle: '@minji',
+          name: '민지',
+          statusMsg: '체리 비니 새로 샀음 🍒',
+          jelly: 150,
+          ruby: 5,
+          isOnline: true,
+          lastSeenAt: '온라인',
+          avatar: { ...DEFAULT_AVATAR_POKI }
+        });
+      } else {
+        setAuthError('서버 연결을 확인해주세요. (테스트용 빠른 로그인을 이용할 수도 있습니다)');
+      }
+      setIsLoading(false);
     }
-    if (loginPassword && user.password && user.password !== loginPassword) {
-      alert('비밀번호가 올바르지 않습니다.');
-      return;
-    }
-
-    // Mark user online
-    setAllUsers(prev => prev.map(u => u.id === user.id ? { ...u, isOnline: true, lastSeenAt: '온라인' } : u));
-    setCurrentUser({ ...user, isOnline: true, lastSeenAt: '온라인' });
-    setLoginHandle('');
-    setLoginPassword('');
-    setActiveChatFriendId(null);
   };
 
-  // Handle Quick Demo Login
-  const handleQuickLogin = (userId: string) => {
-    const user = allUsers.find(u => u.id === userId);
-    if (!user) return;
-
-    // Mark previous user offline, new user online
-    setAllUsers(prev => prev.map(u => {
-      if (currentUser && u.id === currentUser.id) return { ...u, isOnline: false, lastSeenAt: '방금 전' };
-      if (u.id === user.id) return { ...u, isOnline: true, lastSeenAt: '온라인' };
-      return u;
-    }));
-
-    setCurrentUser({ ...user, isOnline: true, lastSeenAt: '온라인' });
-    setActiveChatFriendId(null);
-  };
-
-  // Handle Logout
-  const handleLogout = () => {
-    if (currentUser) {
-      setAllUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, isOnline: false, lastSeenAt: '방금 전' } : u));
-    }
-    setCurrentUser(null);
-    setActiveChatFriendId(null);
-  };
-
-  // Handle Register Step 1
   const handleRegisterFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanHandle = regHandle.trim().startsWith('@') ? regHandle.trim() : `@${regHandle.trim()}`;
-    if (!cleanHandle || !regName.trim()) {
-      alert('아이디와 이름을 모두 입력해주세요.');
-      return;
-    }
-    if (allUsers.some(u => u.handle.toLowerCase() === cleanHandle.toLowerCase())) {
-      alert('이미 사용 중인 @아이디입니다. 다른 아이디를 입력해주세요.');
+    setAuthError(null);
+    if (!regHandle.trim() || !regName.trim()) {
+      setAuthError('아이디와 이름을 입력해주세요.');
       return;
     }
     setRegStep('onboarding');
   };
 
-  // Handle Register Step 2: Onboarding Complete
-  const handleFinishRegister = () => {
-    const cleanHandle = regHandle.trim().startsWith('@') ? regHandle.trim() : `@${regHandle.trim()}`;
-    const newUser: User = {
-      id: 'user_' + Date.now(),
-      handle: cleanHandle,
-      name: regName.trim(),
-      password: regPassword || '1234',
-      statusMsg: '모키포키 새로 입주했어요 🍡',
-      jelly: 100,
-      ruby: 10,
-      isOnline: true,
-      lastSeenAt: '온라인',
-      avatar: onboardingChoice === 'moki' ? { ...DEFAULT_AVATAR_MOKI } : { ...DEFAULT_AVATAR_POKI }
-    };
+  const handleFinishRegister = async () => {
+    setIsLoading(true);
+    setAuthError(null);
 
-    // Auto friend with existing demo users for immediate fun
-    setAllUsers(prev => [...prev, newUser]);
-    setFriendships(prev => [
-      ...prev,
-      [newUser.id, 'user_hyunjun'],
-      ['user_hyunjun', newUser.id],
-      [newUser.id, 'user_minji'],
-      ['user_minji', newUser.id]
-    ]);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          handle: regHandle.trim(),
+          name: regName.trim(),
+          password: regPassword || '1234',
+          baseChoice: onboardingChoice
+        })
+      });
+      const data = await res.json();
 
-    setCurrentUser(newUser);
-    setRegStep('form');
-    setRegHandle('');
-    setRegName('');
-    setRegPassword('');
-    alert(`🎉 환영합니다, ${newUser.name}님! 모키포키 입주가 완료되었습니다!`);
+      if (!res.ok) {
+        setAuthError(data.error || '회원가입에 실패했습니다.');
+        setRegStep('form');
+        setIsLoading(false);
+        return;
+      }
+
+      setCurrentUser(data.user);
+      setRegStep('form');
+      setRegHandle('');
+      setRegName('');
+      setRegPassword('');
+      setIsLoading(false);
+    } catch (err) {
+      // Local fallback create
+      const cleanHandle = regHandle.trim().startsWith('@') ? regHandle.trim() : `@${regHandle.trim()}`;
+      const fallbackUser: User = {
+        id: 'user_' + Date.now(),
+        handle: cleanHandle,
+        name: regName.trim(),
+        statusMsg: '모키포키 새로 입주했어요 🍡',
+        jelly: 100,
+        ruby: 10,
+        isOnline: true,
+        lastSeenAt: '온라인',
+        avatar: onboardingChoice === 'moki' ? { ...DEFAULT_AVATAR_MOKI } : { ...DEFAULT_AVATAR_POKI }
+      };
+      setCurrentUser(fallbackUser);
+      setRegStep('form');
+      setIsLoading(false);
+    }
   };
 
-  // Add Friend Handler
-  const handleAddFriend = () => {
-    if (!currentUser) return;
-    const cleanHandle = addHandleInput.trim().startsWith('@') ? addHandleInput.trim() : `@${addHandleInput.trim()}`;
-    const target = allUsers.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
-
-    if (!target) {
-      alert('해당 @아이디를 가진 사용자를 찾을 수 없습니다.');
-      return;
+  const handleQuickLogin = async (handle: string) => {
+    setLoginHandle(handle);
+    setLoginPassword('demo');
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle, password: 'demo' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentUser(data.user);
+      }
+    } catch (e) {
+      if (handle === '@hyunjun') {
+        setCurrentUser({
+          id: 'user_hyunjun',
+          handle: '@hyunjun',
+          name: '현준',
+          statusMsg: '모키포키에서 뒹굴거리는 중 🍡',
+          jelly: 320,
+          ruby: 20,
+          isOnline: true,
+          lastSeenAt: '온라인',
+          avatar: { ...DEFAULT_AVATAR_MOKI }
+        });
+      } else {
+        setCurrentUser({
+          id: 'user_minji',
+          handle: '@minji',
+          name: '민지',
+          statusMsg: '체리 비니 새로 샀음 🍒',
+          jelly: 150,
+          ruby: 5,
+          isOnline: true,
+          lastSeenAt: '온라인',
+          avatar: { ...DEFAULT_AVATAR_POKI }
+        });
+      }
     }
-    if (target.id === currentUser.id) {
-      alert('자기 자신은 친구로 추가할 수 없습니다.');
-      return;
-    }
-
-    const already = friendships.some(([u1, u2]) => u1 === currentUser.id && u2 === target.id);
-    if (already) {
-      alert('이미 친구로 등록되어 있습니다.');
-      return;
-    }
-
-    setFriendships(prev => [...prev, [currentUser.id, target.id], [target.id, currentUser.id]]);
-    setAddHandleInput('');
-    setShowAddFriend(false);
-    alert(`🎉 ${target.name}님을 친구로 추가했습니다!`);
+    setIsLoading(false);
   };
 
-  // Send Message Handler
-  const handleSendMessage = (type: 'text' | 'bomb' | 'jelly_gift' = 'text') => {
+  const handleLogout = async () => {
+    if (currentUser) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUser.id })
+        });
+      } catch (e) {}
+    }
+    setCurrentUser(null);
+    setActiveChatFriendId(null);
+    setFriends([]);
+    setChatMessages([]);
+  };
+
+  // -------------------------------------------------------------
+  // FRIEND & CHAT ACTIONS
+  // -------------------------------------------------------------
+  const handleAddFriend = async () => {
+    if (!currentUser || !addHandleInput.trim()) return;
+    try {
+      const res = await fetch('/api/friends/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          targetHandle: addHandleInput.trim()
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || '친구 추가에 실패했습니다.');
+        return;
+      }
+      setFriends(prev => [...prev, data.friend]);
+      setAddHandleInput('');
+      setShowAddFriend(false);
+      alert(`🎉 ${data.friend.name}님을 친구로 추가했습니다!`);
+    } catch (err) {
+      alert('서버와 통신할 수 없습니다.');
+    }
+  };
+
+  const handleSendMessage = async (type: 'text' | 'bomb' | 'jelly_gift' = 'text') => {
     if (!currentUser || !activeChatFriendId) return;
     if (type === 'text' && !inputText.trim()) return;
 
-    const targetFriend = allUsers.find(u => u.id === activeChatFriendId);
-    const newMsg: ChatMessage = {
+    const textToSend = type === 'text'
+      ? inputText.trim()
+      : type === 'bomb'
+      ? '💣 시크릿 폭탄 메시지!'
+      : '🍇 젤리 10개를 선물했습니다!';
+
+    const tempMsg: ChatMessage = {
       id: 'msg_' + Date.now(),
       senderId: currentUser.id,
       receiverId: activeChatFriendId,
-      text: type === 'text' ? inputText.trim() : type === 'bomb' ? '💣 시크릿 폭탄 메시지!' : '🍇 젤리 10개를 선물했습니다!',
+      text: textToSend,
       timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }),
       type,
       isExploded: false
     };
 
-    setAllMessages(prev => [...prev, newMsg]);
+    setChatMessages(prev => [...prev, tempMsg]);
     setInputText('');
     setShowGimmickMenu(false);
     if (textareaRef.current) textareaRef.current.style.height = '42px';
 
-    // Reward: +1 Jelly to sender
+    // Reward: +1 Jelly
     setCurrentUser(prev => prev ? { ...prev, jelly: prev.jelly + 1 } : null);
 
-    // If target friend is offline -> Push Notification Simulation Banner!
-    if (!targetFriend?.isOnline) {
-      setPushToast(`📲 [백그라운드 웹푸시 발송] ${targetFriend?.name}님이 현재 오프라인 상태여서 휴대폰 잠금화면으로 알림을 전송했습니다!`);
-      setTimeout(() => setPushToast(null), 3800);
+    try {
+      const res = await fetch('/api/messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId: currentUser.id,
+          receiverId: activeChatFriendId,
+          text: textToSend,
+          type
+        })
+      });
+      const data = await res.json();
+      if (data.pushTriggered) {
+        setPushToast(`📲 [백그라운드 웹푸시 발송] 상대방(${data.receiverName || '친구'})이 오프라인 상태여서 잠금화면으로 알림을 전송했습니다!`);
+        setTimeout(() => setPushToast(null), 3800);
+      }
+    } catch (err) {
+      // Local fallback push simulation
+      const activeF = friends.find(f => f.id === activeChatFriendId);
+      if (!activeF?.isOnline) {
+        setPushToast(`📲 [백그라운드 웹푸시 발송] ${activeF?.name}님이 오프라인 상태여서 잠금화면으로 알림을 전송했습니다!`);
+        setTimeout(() => setPushToast(null), 3800);
+      }
     }
   };
 
-  // Explode Bomb Message
-  const handleExplodeBomb = (msgId: string) => {
-    setAllMessages(prev => prev.map(m => m.id === msgId ? { ...m, isExploded: true } : m));
+  const handleExplodeBomb = async (msgId: string) => {
+    setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, isExploded: true } : m));
+    try {
+      await fetch('/api/messages/explode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msgId })
+      });
+    } catch (e) {}
   };
 
-  // Compute Current User's Friends
-  const myFriends: User[] = currentUser
-    ? allUsers.filter(u => friendships.some(([u1, u2]) => u1 === currentUser.id && u2 === u.id))
-    : [];
-
-  const activeFriend = allUsers.find(u => u.id === activeChatFriendId);
-  const currentChatMsgs = (currentUser && activeChatFriendId)
-    ? allMessages.filter(m =>
-        (m.senderId === currentUser.id && m.receiverId === activeChatFriendId) ||
-        (m.senderId === activeChatFriendId && m.receiverId === currentUser.id)
-      )
-    : [];
+  const activeFriend = friends.find(f => f.id === activeChatFriendId);
 
   return (
     <div className="flex justify-center bg-[#18181B] min-h-screen text-[#2B2321] font-sans antialiased">
-      {/* Mobile Shell (430px) */}
+      {/* Mobile PWA Shell (430px) */}
       <div className="w-full max-w-[430px] min-h-screen bg-[#FFFBF7] flex flex-col shadow-2xl relative overflow-hidden">
         
         <style>{`
@@ -352,14 +402,14 @@ export default function App() {
         )}
 
         {/* ============================================================== */}
-        {/* 1. AUTH GATE (If not logged in) */}
+        {/* 1. AUTH GATE SCREEN (Shown when currentUser is NULL) */}
         {/* ============================================================== */}
         {!currentUser ? (
           <div className="flex-1 flex flex-col p-6 justify-between min-h-screen bg-gradient-to-b from-[#FFF5F5] to-[#FFFBF7] pop-in">
             {regStep === 'form' ? (
               <>
-                <div className="text-center mt-8">
-                  <div className="text-[48px] animate-bounce mb-1">🍡</div>
+                <div className="text-center mt-6">
+                  <div className="text-[52px] animate-bounce mb-1">🍡</div>
                   <h1 className="text-[26px] font-black text-[#FF6B6B] tracking-tight">
                     모키포키 (MokiPoki)
                   </h1>
@@ -368,10 +418,17 @@ export default function App() {
                   </p>
                 </div>
 
+                {/* Error Banner */}
+                {authError && (
+                  <div className="bg-[#FEE2E2] border border-[#FCA5A5] p-3 rounded-2xl text-[12px] text-[#991B1B] font-bold text-center mt-3 pop-in">
+                    {authError}
+                  </div>
+                )}
+
                 {/* Auth Mode Tabs */}
-                <div className="bg-[#F5ECE5] p-1 rounded-2xl flex my-6">
+                <div className="bg-[#F5ECE5] p-1 rounded-2xl flex my-5">
                   <button
-                    onClick={() => setAuthTab('login')}
+                    onClick={() => { setAuthTab('login'); setAuthError(null); }}
                     className={`flex-1 py-2.5 rounded-xl font-bold text-[14px] transition-all ${
                       authTab === 'login' ? 'bg-white text-[#FF6B6B] shadow-sm' : 'text-[#786963]'
                     }`}
@@ -379,7 +436,7 @@ export default function App() {
                     로그인
                   </button>
                   <button
-                    onClick={() => setAuthTab('register')}
+                    onClick={() => { setAuthTab('register'); setAuthError(null); }}
                     className={`flex-1 py-2.5 rounded-xl font-bold text-[14px] transition-all ${
                       authTab === 'register' ? 'bg-white text-[#FF6B6B] shadow-sm' : 'text-[#786963]'
                     }`}
@@ -397,7 +454,8 @@ export default function App() {
                         type="text"
                         value={loginHandle}
                         onChange={e => setLoginHandle(e.target.value)}
-                        placeholder="@hyunjun 또는 @minji"
+                        placeholder="@아이디 입력 (예: @hyunjun)"
+                        required
                         className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1 font-medium"
                       />
                     </div>
@@ -407,15 +465,16 @@ export default function App() {
                         type="password"
                         value={loginPassword}
                         onChange={e => setLoginPassword(e.target.value)}
-                        placeholder="demo (테스트용)"
+                        placeholder="비밀번호"
                         className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1"
                       />
                     </div>
                     <button
                       type="submit"
-                      className="w-full py-3.5 rounded-2xl bg-[#FF6B6B] text-white font-extrabold text-[15px] shadow-md mt-2 active:scale-98"
+                      disabled={isLoading}
+                      className="w-full py-3.5 rounded-2xl bg-[#FF6B6B] text-white font-extrabold text-[15px] shadow-md mt-2 active:scale-98 disabled:opacity-50"
                     >
-                      모키포키 로그인 ✨
+                      {isLoading ? '로그인 중...' : '모키포키 로그인 ✨'}
                     </button>
                   </form>
                 ) : (
@@ -426,7 +485,8 @@ export default function App() {
                         type="text"
                         value={regHandle}
                         onChange={e => setRegHandle(e.target.value)}
-                        placeholder="@아이디 입력 (예: @charlie)"
+                        placeholder="@아이디 (예: @hyunjun_new)"
+                        required
                         className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1 font-medium"
                       />
                     </div>
@@ -437,6 +497,7 @@ export default function App() {
                         value={regName}
                         onChange={e => setRegName(e.target.value)}
                         placeholder="친구들에게 보일 이름"
+                        required
                         className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1"
                       />
                     </div>
@@ -459,32 +520,41 @@ export default function App() {
                   </form>
                 )}
 
-                {/* Quick Account Switcher Section */}
+                {/* Quick Account Test Login */}
                 <div className="mt-8 pt-4 border-t border-[#F0E6DE]">
                   <div className="text-[12px] font-bold text-[#786963] text-center mb-2.5">
-                    🧪 빠른 테스트용 계정 바로 들어가기:
+                    🧪 테스트용 빠른 로그인:
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {allUsers.map(u => (
-                      <button
-                        key={u.id}
-                        onClick={() => handleQuickLogin(u.id)}
-                        className="p-2.5 rounded-2xl bg-white border border-[#FED7AA] flex flex-col items-center shadow-sm active:scale-95"
-                      >
-                        <AvatarRenderer config={u.avatar} size={36} animated={false} />
-                        <span className="font-bold text-[12px] text-[#2B2321] mt-1">{u.name}</span>
-                        <span className="text-[10px] text-[#FF6B6B]">{u.handle}</span>
-                      </button>
-                    ))}
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      onClick={() => handleQuickLogin('@hyunjun')}
+                      className="p-3 rounded-2xl bg-white border border-[#FED7AA] flex items-center gap-2.5 shadow-sm active:scale-95 text-left"
+                    >
+                      <AvatarRenderer config={DEFAULT_AVATAR_MOKI} size={36} animated={false} />
+                      <div>
+                        <div className="font-bold text-[13px] text-[#2B2321]">현준 계정</div>
+                        <div className="text-[11px] text-[#FF6B6B]">@hyunjun</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => handleQuickLogin('@minji')}
+                      className="p-3 rounded-2xl bg-white border border-[#FED7AA] flex items-center gap-2.5 shadow-sm active:scale-95 text-left"
+                    >
+                      <AvatarRenderer config={DEFAULT_AVATAR_POKI} size={36} animated={false} />
+                      <div>
+                        <div className="font-bold text-[13px] text-[#2B2321]">민지 계정</div>
+                        <div className="text-[11px] text-[#FF6B6B]">@minji</div>
+                      </div>
+                    </button>
                   </div>
                 </div>
               </>
             ) : (
-              /* Onboarding Choice Scene */
+              /* Onboarding Scene: Choose Moki or Poki */
               <div className="flex-1 flex flex-col items-center justify-between py-4 pop-in">
                 <div className="text-center mt-6">
                   <span className="text-[11px] font-bold px-3 py-1 rounded-full bg-[#FFE5D9] text-[#E76F51]">
-                    STEP 2 · 캐릭터 온보딩
+                    STEP 2 · 캐릭터 선택
                   </span>
                   <h2 className="text-[22px] font-black mt-2 text-[#2B2321]">
                     {regName}님의 단짝 캐릭터를 골라줘! 👯‍♀️
@@ -527,9 +597,10 @@ export default function App() {
                   </div>
                   <button
                     onClick={handleFinishRegister}
+                    disabled={isLoading}
                     className="w-full py-4 rounded-2xl bg-[#FF6B6B] text-white font-black text-[16px] shadow-lg active:scale-98"
                   >
-                    이 캐릭터로 입주 완료! ✨
+                    {isLoading ? '가입 중...' : '이 캐릭터로 입주 완료! ✨'}
                   </button>
                 </div>
               </div>
@@ -538,7 +609,7 @@ export default function App() {
         ) : (
 
         /* ============================================================== */}
-        /* 2. AUTHENTICATED APP SHELL */
+        /* 2. AUTHENTICATED REAL APP SHELL */
         /* ============================================================== */}
           <>
             {/* TOP HEADER */}
@@ -583,7 +654,7 @@ export default function App() {
                     </span>
                     <button
                       onClick={handleLogout}
-                      className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#4B5563] border border-[#E5E7EB] active:scale-95"
+                      className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#4B5563] border border-[#E5E7EB] active:scale-95"
                     >
                       로그아웃 🚪
                     </button>
@@ -610,7 +681,7 @@ export default function App() {
                     </span>
                   </div>
 
-                  {currentChatMsgs.map(msg => {
+                  {chatMessages.map(msg => {
                     const isMe = msg.senderId === currentUser.id;
                     const avatar = isMe ? currentUser.avatar : activeFriend?.avatar || DEFAULT_AVATAR_POKI;
 
@@ -664,24 +735,6 @@ export default function App() {
               {!activeChatFriendId && activeTab === 'friends' && (
                 <div className="flex flex-col gap-4 pop-in">
                   
-                  {/* Quick Switch Bar Between Accounts */}
-                  <div className="bg-[#FFF9F5] p-2.5 rounded-2xl border border-[#FED7AA] flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-[#E76F51]">⚡ 계정 전환 테스트:</span>
-                    <div className="flex gap-1.5">
-                      {allUsers.map(u => (
-                        <button
-                          key={u.id}
-                          onClick={() => handleQuickLogin(u.id)}
-                          className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all ${
-                            currentUser.id === u.id ? 'bg-[#FF6B6B] text-white' : 'bg-white text-[#4B5563]'
-                          }`}
-                        >
-                          {u.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
                   {/* My Profile Card */}
                   <div className="bg-gradient-to-r from-[#FFF0E6] to-[#FFE5D9] p-4 rounded-3xl border border-[#FED7AA] flex items-center gap-4 shadow-sm">
                     <AvatarRenderer config={currentUser.avatar} size={68} />
@@ -707,7 +760,7 @@ export default function App() {
                   {/* Friends Header */}
                   <div className="flex items-center justify-between px-1">
                     <span className="font-extrabold text-[15px] text-[#5C4D47]">
-                      내 친구 ({myFriends.length})
+                      내 친구 ({friends.length})
                     </span>
                     <button
                       onClick={() => setShowAddFriend(true)}
@@ -719,12 +772,12 @@ export default function App() {
 
                   {/* Friends List */}
                   <div className="flex flex-col gap-2.5">
-                    {myFriends.length === 0 ? (
+                    {friends.length === 0 ? (
                       <div className="text-center py-8 text-[#A89F91] text-[13px]">
                         아직 추가된 친구가 없어요. 상단의 [+ 친구 추가]를 눌러보세요!
                       </div>
                     ) : (
-                      myFriends.map(friend => (
+                      friends.map(friend => (
                         <div
                           key={friend.id}
                           onClick={() => setActiveChatFriendId(friend.id)}
@@ -766,42 +819,29 @@ export default function App() {
               {!activeChatFriendId && activeTab === 'chat' && (
                 <div className="flex flex-col gap-3 pop-in">
                   <div className="font-extrabold text-[18px] text-[#2B2321] mb-1">채팅 목록</div>
-                  {myFriends.map(friend => {
-                    const conv = allMessages.filter(m =>
-                      (m.senderId === currentUser.id && m.receiverId === friend.id) ||
-                      (m.senderId === friend.id && m.receiverId === currentUser.id)
-                    );
-                    const lastMsg = conv[conv.length - 1];
-
-                    return (
-                      <div
-                        key={friend.id}
-                        onClick={() => setActiveChatFriendId(friend.id)}
-                        className="bg-white p-4 rounded-2xl border border-[#F0E6DE] flex items-center gap-3.5 shadow-sm active:bg-[#FFF9F5] transition-colors cursor-pointer"
-                      >
-                        <div className="relative">
-                          <AvatarRenderer config={friend.avatar} size={50} animated={false} />
-                          {friend.isOnline && (
-                            <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#10B981] border-2 border-white rounded-full" />
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-[16px] text-[#2B2321]">{friend.name}</span>
-                            <span className="text-[11px] text-[#A89F91]">{lastMsg?.timestamp || ''}</span>
-                          </div>
-                          <div className="text-[13px] text-[#786963] truncate mt-1">
-                            {lastMsg ? (lastMsg.type === 'bomb' ? '💣 폭탄 메시지' : lastMsg.text) : '대화를 시작해보세요!'}
-                          </div>
-                        </div>
-                        {conv.length > 0 && (
-                          <span className="w-5 h-5 rounded-full bg-[#FF6B6B] text-white text-[10px] font-bold flex items-center justify-center">
-                            {conv.length}
-                          </span>
+                  {friends.map(friend => (
+                    <div
+                      key={friend.id}
+                      onClick={() => setActiveChatFriendId(friend.id)}
+                      className="bg-white p-4 rounded-2xl border border-[#F0E6DE] flex items-center gap-3.5 shadow-sm active:bg-[#FFF9F5] transition-colors cursor-pointer"
+                    >
+                      <div className="relative">
+                        <AvatarRenderer config={friend.avatar} size={50} animated={false} />
+                        {friend.isOnline && (
+                          <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#10B981] border-2 border-white rounded-full" />
                         )}
                       </div>
-                    );
-                  })}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-[16px] text-[#2B2321]">{friend.name}</span>
+                          <span className="text-[11px] text-[#A89F91]">대화 열기</span>
+                        </div>
+                        <div className="text-[13px] text-[#786963] truncate mt-1">
+                          {friend.statusMsg}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -813,7 +853,6 @@ export default function App() {
                     <button
                       onClick={() => {
                         setCurrentUser(prev => prev ? { ...prev, avatar: { ...wardrobeAvatar } } : null);
-                        setAllUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, avatar: { ...wardrobeAvatar } } : u));
                         alert('🎉 아바타 코디가 저장되었습니다!');
                       }}
                       className="px-4 py-1.5 rounded-full bg-[#FF6B6B] text-white font-extrabold text-[13px] shadow-md active:scale-95"
@@ -1046,7 +1085,7 @@ export default function App() {
                     type="text"
                     value={addHandleInput}
                     onChange={e => setAddHandleInput(e.target.value)}
-                    placeholder="@아이디 입력 (예: @minji, @junho)"
+                    placeholder="@아이디 입력 (예: @minji, @hyunjun)"
                     className="w-full bg-[#F5ECE5] px-4 py-2.5 rounded-xl text-[14px] outline-none mb-4 font-medium"
                   />
                   <div className="flex gap-2">
