@@ -1,0 +1,64 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String        @id @default(uuid())
+  handle       String        @unique // e.g. "@hyunjun"
+  name         String
+  statusMsg    String?       @default("모키포키에서 뒹굴거리는 중 🍡")
+  jellyBalance Int           @default(100)
+  rubyBalance  Int           @default(10)
+  avatarConfig Json          // { base, face, headwear, top, bottom, handheld, bg, effect }
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  sentMessages         Message[]    @relation("SentMessages")
+  friendshipsInitiated Friendship[] @relation("UserFriendships")
+  friendshipsReceived  Friendship[] @relation("FriendOfUser")
+}
+
+model Friendship {
+  id        String   @id @default(uuid())
+  userId    String
+  friendId  String
+  status    String   @default("accepted") // pending, accepted, blocked
+  createdAt DateTime @default(now())
+
+  user   User @relation("UserFriendships", fields: [userId], references: [id])
+  friend User @relation("FriendOfUser", fields: [friendId], references: [id])
+
+  @@unique([userId, friendId])
+}
+
+model ChatRoom {
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id          String   @id @default(uuid())
+  roomId      String
+  senderId    String
+  text        String
+  type        String   @default("text") // text, bomb, jelly_gift
+  isExploded  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  room   ChatRoom @relation(fields: [roomId], references: [id])
+  sender User     @relation("SentMessages", fields: [senderId], references: [id])
+}
+
+model StoreItem {
+  id         String   @id
+  category   String   // headwear, top, bottom, handheld, face, bg
+  name       String
+  priceJelly Int      @default(0)
+  priceRuby  Int      @default(0)
+}
