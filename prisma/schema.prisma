@@ -8,15 +8,19 @@ generator client {
 }
 
 model User {
-  id           String        @id @default(uuid())
-  handle       String        @unique // e.g. "@hyunjun"
-  name         String
-  statusMsg    String?       @default("모키포키에서 뒹굴거리는 중 🍡")
-  jellyBalance Int           @default(100)
-  rubyBalance  Int           @default(10)
-  avatarConfig Json          // { base, face, headwear, top, bottom, handheld, bg, effect }
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id               String        @id @default(uuid())
+  handle           String        @unique // e.g. "@hyunjun"
+  name             String
+  passwordHash     String?
+  statusMsg        String?       @default("모키포키에서 뒹굴거리는 중 🍡")
+  jellyBalance     Int           @default(100)
+  rubyBalance      Int           @default(10)
+  avatarConfig     Json          // { base, face, headwear, top, bottom, handheld, bg, effect }
+  isOnline         Boolean       @default(false)
+  lastSeenAt       DateTime?     @default(now())
+  pushSubscription Json?         // { endpoint, keys: { p256dh, auth } }
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   sentMessages         Message[]    @relation("SentMessages")
   friendshipsInitiated Friendship[] @relation("UserFriendships")
@@ -44,15 +48,16 @@ model ChatRoom {
 
 model Message {
   id          String   @id @default(uuid())
-  roomId      String
+  roomId      String?
   senderId    String
+  receiverId  String?
   text        String
   type        String   @default("text") // text, bomb, jelly_gift
   isExploded  Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  room   ChatRoom @relation(fields: [roomId], references: [id])
-  sender User     @relation("SentMessages", fields: [senderId], references: [id])
+  room   ChatRoom? @relation(fields: [roomId], references: [id])
+  sender User      @relation("SentMessages", fields: [senderId], references: [id])
 }
 
 model StoreItem {
