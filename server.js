@@ -11,10 +11,10 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Persistent Database Storage File Path
+// Persistent Database Storage File Path (safely handled with try-catch for read-only containers)
 const DB_FILE = path.join(__dirname, 'database.json');
 
-// Initial default seed data if DB file doesn't exist
+// Default initial seed data
 const DEFAULT_DB = {
   users: [
     {
@@ -85,29 +85,32 @@ const DEFAULT_DB = {
   ]
 };
 
-// Load or Initialize DB
+// Safe DB loading without crashing on read-only environments
+let memoryDB = JSON.parse(JSON.stringify(DEFAULT_DB));
+
 function loadDB() {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = fs.readFileSync(DB_FILE, 'utf-8');
-      return JSON.parse(data);
+      memoryDB = JSON.parse(data);
     }
   } catch (err) {
-    console.error('[DB] Load error, fallback to default:', err);
+    console.warn('[DB] Persistent read skipped (using memory store):', err.message);
   }
-  saveDB(DEFAULT_DB);
-  return DEFAULT_DB;
+  return memoryDB;
 }
 
 function saveDB(data) {
+  memoryDB = data;
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('[DB] Save error:', err);
+    console.warn('[DB] Persistent write skipped (running in-memory):', err.message);
   }
 }
 
-let db = loadDB();
+// Initial safe load
+loadDB();
 
 // ----------------- AUTH APIS -----------------
 app.post('/api/auth/register', (req, res) => {
@@ -117,7 +120,7 @@ app.post('/api/auth/register', (req, res) => {
   }
 
   const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
-  db = loadDB();
+  const db = loadDB();
 
   if (db.users.some(u => u.handle.toLowerCase() === cleanHandle.toLowerCase())) {
     return res.status(400).json({ error: '이미 존재하는 @아이디입니다. 다른 아이디를 입력해주세요.' });
@@ -145,14 +148,13 @@ app.post('/api/auth/register', (req, res) => {
   };
 
   db.users.push(newUser);
-  // Auto-connect with Hyun-jun and Minji for instant chat testing
   db.friendships.push([newUser.id, 'user_hyunjun']);
   db.friendships.push(['user_hyunjun', newUser.id]);
   db.friendships.push([newUser.id, 'user_minji']);
   db.friendships.push(['user_minji', newUser.id]);
 
   saveDB(db);
-  console.log(`[Auth] Registered & persisted user: ${newUser.name} (${newUser.handle})`);
+  console.log(`[Auth] Registered: ${newUser.name} (${newUser.handle})`);
   res.json({ success: true, user: newUser });
 });
 
@@ -163,7 +165,7 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
-  db = loadDB();
+  const db = loadDB();
   const user = db.users.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
 
   if (!user) {
@@ -182,7 +184,7 @@ app.post('/api/auth/login', (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   const { userId } = req.body;
-  db = loadDB();
+  const db = loadDB();
   const user = db.users.find(u => u.id === userId);
   if (user) {
     user.isOnline = false;
@@ -193,7 +195,7 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/users', (req, res) => {
-  db = loadDB();
+  const db = loadDB();
   const safeUsers = db.users.map(({ password, ...rest }) => rest);
   res.json({ users: safeUsers });
 });
@@ -203,7 +205,7 @@ app.get('/api/friends', (req, res) => {
   const { userId } = req.query;
   if (!userId) return res.status(400).json({ error: 'userId가 필요합니다.' });
 
-  db = loadDB();
+  const db = loadDB();
   const friendIds = db.friendships.filter(([u1, u2]) => u1 === userId).map(([u1, u2]) => u2);
   const friendList = db.users.filter(u => friendIds.includes(u.id)).map(({ password, ...rest }) => rest);
   res.json({ friends: friendList });
@@ -214,7 +216,7 @@ app.post('/api/friends/add', (req, res) => {
   if (!userId || !targetHandle) return res.status(400).json({ error: '정보가 누락되었습니다.' });
 
   const cleanHandle = targetHandle.startsWith('@') ? targetHandle : `@${targetHandle}`;
-  db = loadDB();
+  const db = loadDB();
   const targetUser = db.users.find(u => u.handle.toLowerCase() === cleanHandle.toLowerCase());
 
   if (!targetUser) {
@@ -242,7 +244,7 @@ app.get('/api/messages', (req, res) => {
   const { userId, friendId } = req.query;
   if (!userId || !friendId) return res.status(400).json({ error: 'userId와 friendId가 필요합니다.' });
 
-  db = loadDB();
+  const db = loadDB();
   const conversation = db.messages.filter(m =>
     (m.senderId === userId && m.receiverId === friendId) ||
     (m.senderId === friendId && m.receiverId === userId)
@@ -256,14 +258,14 @@ app.post('/api/messages/send', (req, res) => {
     return res.status(400).json({ error: '메시지 전송 정보가 누락되었습니다.' });
   }
 
-  db = loadDB();
+  const db = loadDB();
   const newMsg = {
     id: 'msg_' + Date.now(),
     senderId,
     receiverId,
     text,
     type,
-    timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }),
+    timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
     isExploded: false
   };
 
@@ -272,10 +274,6 @@ app.post('/api/messages/send', (req, res) => {
 
   const receiver = db.users.find(u => u.id === receiverId);
   const isOffline = !receiver?.isOnline;
-
-  if (isOffline) {
-    console.log(`[WebPush] 📲 Receiver ${receiver?.name}(${receiverId}) is OFFLINE! Web Push triggered.`);
-  }
 
   res.json({
     success: true,
@@ -287,7 +285,7 @@ app.post('/api/messages/send', (req, res) => {
 
 app.post('/api/messages/explode', (req, res) => {
   const { msgId } = req.body;
-  db = loadDB();
+  const db = loadDB();
   const msg = db.messages.find(m => m.id === msgId);
   if (msg) {
     msg.isExploded = true;
@@ -296,12 +294,21 @@ app.post('/api/messages/explode', (req, res) => {
   res.json({ success: true });
 });
 
-// Serve Vite Static Production Build
-app.use(express.static(path.join(__dirname, 'dist')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
+// Serve static build or fallback
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+} else {
+  // If dist is not built yet, fallback gracefully to root index.html
+  app.use(express.static(__dirname));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+  });
+}
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 MokiPoki Persistent Server running on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 MokiPoki server running on http://0.0.0.0:${PORT}`);
 });
