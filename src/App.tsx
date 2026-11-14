@@ -31,6 +31,17 @@ interface ChatMessage {
   isExploded?: boolean;
 }
 
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
@@ -92,10 +103,41 @@ export default function App() {
     setTimeout(() => setToastMsg(''), 3000);
   };
 
+  const subscribePush = async (userId: string) => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      
+      const res = await fetch('/api/push/vapid-public-key');
+      if (!res.ok) return;
+      const { publicKey } = await res.json();
+      if (!publicKey) return;
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      });
+
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, subscription: sub })
+      });
+      console.log('Background Web Push subscription active on server');
+    } catch (err) {
+      console.warn('Push subscription notice:', err);
+    }
+  };
+
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('mokipoki_user', JSON.stringify(currentUser));
       setStatusInput(currentUser.statusMsg);
+
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        subscribePush(currentUser.id);
+      }
 
       const hbInterval = setInterval(() => {
         fetch('/api/users/heartbeat', {
@@ -309,11 +351,10 @@ export default function App() {
       if (permission === 'granted') {
         setPushEnabled(true);
         localStorage.setItem('mokipoki_push_enabled', 'true');
-        showToast('🔔 웹푸시 알림이 활성화되었습니다!');
-        new Notification('모키포키 알림 켜짐 ✨', {
-          body: '이제 친구가 보낸 메시지와 젤리 선물을 바로 알려드릴게요!',
-          icon: '/favicon.ico'
-        });
+        showToast('🔔 백그라운드 웹푸시 알림이 활성화되었습니다!');
+        if (currentUser) {
+          await subscribePush(currentUser.id);
+        }
       } else {
         setPushEnabled(false);
         localStorage.setItem('mokipoki_push_enabled', 'false');
@@ -459,7 +500,7 @@ export default function App() {
       if (data.success) {
         setChatMessages(prev => [...prev, data.message]);
         if (data.pushTriggered) {
-          showToast('📲 상대방이 오프라인이라 백그라운드 푸시 알림이 발송되었어요!');
+          showToast('📲 상대방에게 백그라운드 푸시 알림이 발송되었어요!');
         }
       }
     } catch (e) {
@@ -497,7 +538,7 @@ export default function App() {
 
   if (!currentUser) {
     return (
-      <div className="flex flex-col h-screen max-w-md mx-auto bg-gradient-to-b from-[#FFFBEB] via-[#FEF3C7] to-[#FDE68A] text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
+      <div className="flex flex-col h-[100dvh] max-h-[100dvh] max-w-md mx-auto bg-gradient-to-b from-[#FFFBEB] via-[#FEF3C7] to-[#FDE68A] text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
         {toastMsg && (
           <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-slate-900/90 text-white rounded-2xl shadow-xl text-center text-xs font-bold animate-bounce backdrop-blur">
             {toastMsg}
@@ -728,38 +769,41 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen max-w-md mx-auto bg-slate-50 text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
+    <div className="flex flex-col h-[100dvh] max-h-[100dvh] max-w-md mx-auto bg-slate-50 text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
       {toastMsg && (
         <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-slate-900/90 text-white rounded-2xl shadow-xl text-center text-xs font-bold animate-bounce backdrop-blur">
           {toastMsg}
         </div>
       )}
 
-      <header className="px-4 py-3 bg-white/95 backdrop-blur-md border-b border-slate-100 flex items-center justify-between z-20">
-        <div className="flex items-center gap-2">
-          <span className="text-xl">🍡</span>
-          <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-amber-600 to-rose-500 bg-clip-text text-transparent">
-            모키포키
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-bold text-amber-900">
-            <span>🍇 {currentUser.jelly}</span>
-            <span className="text-slate-300">|</span>
-            <span>💎 {currentUser.ruby}</span>
+      {/* Global Top Header (Hidden while in 1:1 chat room to guarantee dedicated chat view) */}
+      {!activeFriend && (
+        <header className="px-4 py-3 bg-white/95 backdrop-blur-md border-b border-slate-100 flex items-center justify-between z-20 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🍡</span>
+            <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-amber-600 to-rose-500 bg-clip-text text-transparent">
+              모키포키
+            </span>
           </div>
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-1.5 rounded-full hover:bg-slate-100 text-slate-600 transition-all text-sm"
-            title="설정 및 알림"
-          >
-            ⚙️
-          </button>
-        </div>
-      </header>
 
-      <main className="flex-1 overflow-y-auto pb-16">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-bold text-amber-900">
+              <span>🍇 {currentUser.jelly}</span>
+              <span className="text-slate-300">|</span>
+              <span>💎 {currentUser.ruby}</span>
+            </div>
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-1.5 rounded-full hover:bg-slate-100 text-slate-600 transition-all text-sm"
+              title="설정 및 알림"
+            >
+              ⚙️
+            </button>
+          </div>
+        </header>
+      )}
+
+      <main className={`flex-1 overflow-y-auto ${!activeFriend ? 'pb-16' : ''}`}>
         {activeTab === 'friends' && (
           <div className="p-4 space-y-4">
             <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
@@ -950,12 +994,13 @@ export default function App() {
         {activeTab === 'chat' && (
           <div className="h-full flex flex-col">
             {activeFriend ? (
-              <div className="flex flex-col h-full bg-slate-100">
-                <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center justify-between shadow-xs">
+              <div className="flex flex-col h-full bg-slate-100 relative">
+                {/* STICKY CHAT HEADER: Stays permanently visible above keyboard and messages */}
+                <div className="sticky top-0 z-30 bg-white/95 backdrop-blur-md px-4 py-2.5 border-b border-slate-200 flex items-center justify-between shadow-xs">
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => setActiveFriend(null)}
-                      className="text-slate-400 hover:text-slate-700 text-sm font-bold"
+                      className="text-slate-500 hover:text-slate-800 text-base font-extrabold px-1"
                     >
                       ←
                     </button>
@@ -989,6 +1034,7 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* SCROLLABLE CHAT MESSAGES */}
                 <div className="flex-1 p-4 overflow-y-auto space-y-3">
                   {chatMessages.length === 0 ? (
                     <div className="text-center py-10 text-xs text-slate-400">
@@ -1034,7 +1080,8 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </div>
 
-                <div className="bg-white p-2.5 border-t border-slate-200">
+                {/* CHAT INPUT BAR: Sticky at bottom above virtual keyboard */}
+                <div className="sticky bottom-0 bg-white p-2.5 border-t border-slate-200 z-30">
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => handleSendMessage('bomb')}
@@ -1179,28 +1226,31 @@ export default function App() {
         )}
       </main>
 
-      <nav className="absolute bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-slate-100 flex items-center justify-around z-20">
-        {[
-          { id: 'friends', label: '친구', icon: '👥' },
-          { id: 'chat', label: '채팅', icon: '💬' },
-          { id: 'store', label: '스토어', icon: '🛍️' },
-          { id: 'myhome', label: '마이홈', icon: '🏠' }
-        ].map(tab => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => { setActiveTab(tab.id as any); if (tab.id !== 'chat') setActiveFriend(null); }}
-              className={`flex flex-col items-center justify-center flex-1 py-1 transition-all ${
-                isActive ? 'text-amber-600 font-extrabold scale-105' : 'text-slate-400 font-medium'
-              }`}
-            >
-              <span className="text-lg">{tab.icon}</span>
-              <span className="text-[10px] mt-0.5">{tab.label}</span>
-            </button>
-          );
-        })}
-      </nav>
+      {/* Global Bottom Navigation (Hidden while inside active 1:1 chat room) */}
+      {!activeFriend && (
+        <nav className="absolute bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-slate-100 flex items-center justify-around z-20">
+          {[
+            { id: 'friends', label: '친구', icon: '👥' },
+            { id: 'chat', label: '채팅', icon: '💬' },
+            { id: 'store', label: '스토어', icon: '🛍️' },
+            { id: 'myhome', label: '마이홈', icon: '🏠' }
+          ].map(tab => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => { setActiveTab(tab.id as any); if (tab.id !== 'chat') setActiveFriend(null); }}
+                className={`flex flex-col items-center justify-center flex-1 py-1 transition-all ${
+                  isActive ? 'text-amber-600 font-extrabold scale-105' : 'text-slate-400 font-medium'
+                }`}
+              >
+                <span className="text-lg">{tab.icon}</span>
+                <span className="text-[10px] mt-0.5">{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
 
       {isSettingsOpen && (
         <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1218,9 +1268,9 @@ export default function App() {
             <div className="bg-amber-50/60 rounded-2xl p-3.5 border border-amber-200/70 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-extrabold text-xs text-amber-950">🔔 웹푸시 알림 권한</div>
+                  <div className="font-extrabold text-xs text-amber-950">🔔 백그라운드 웹푸시 알림</div>
                   <div className="text-[10px] text-amber-800/80">
-                    상태: {notificationPermission === 'granted' ? '✅ 허용됨' : notificationPermission === 'denied' ? '❌ 차단됨' : '⚠️ 미설정'}
+                    상태: {notificationPermission === 'granted' ? '✅ 권한 허용됨 (푸시 활성)' : notificationPermission === 'denied' ? '❌ 권한 차단됨' : '⚠️ 미설정'}
                   </div>
                 </div>
                 {notificationPermission !== 'granted' && (
@@ -1234,15 +1284,18 @@ export default function App() {
               </div>
 
               <div className="flex items-center justify-between pt-1 border-t border-amber-200/50">
-                <span className="text-xs font-bold text-slate-700">백그라운드 푸시 알림</span>
+                <span className="text-xs font-bold text-slate-700">푸시 알림 수신 토글</span>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (notificationPermission !== 'granted') {
                       handleRequestNotificationPermission();
                     } else {
                       const next = !pushEnabled;
                       setPushEnabled(next);
                       localStorage.setItem('mokipoki_push_enabled', String(next));
+                      if (next && currentUser) {
+                        await subscribePush(currentUser.id);
+                      }
                       showToast(next ? '푸시 알림이 활성화되었습니다.' : '푸시 알림이 비활성화되었습니다.');
                     }
                   }}
