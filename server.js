@@ -490,12 +490,11 @@ app.post('/api/messages/send', (req, res) => {
   saveDB(db);
 
   const receiver = db.users.find(u => u.id === receiverId);
-  const isReceiverOnline = receiver && receiver.isOnline && (Date.now() - (receiver.lastActiveTime || 0) < 20000);
-
   const receiverMuteKey = `${receiverId}_${senderId}`;
   const isReceiverMuted = !!(db.mutedRooms && db.mutedRooms[receiverMuteKey]);
 
-  const pushTriggered = !isReceiverOnline && !isReceiverMuted;
+  // Always trigger push when sender is different and room is not muted
+  const pushTriggered = (senderId !== receiverId) && !isReceiverMuted;
   if (pushTriggered && db.pushSubscriptions && db.pushSubscriptions[receiverId]) {
     const sender = db.users.find(u => u.id === senderId);
     const senderName = sender ? sender.name : '친구';
@@ -606,6 +605,34 @@ app.post('/api/push/subscribe', (req, res) => {
 
   saveDB(db);
   res.json({ success: true });
+});
+
+
+// Endpoint to test background push after 3 seconds delay
+app.post('/api/push/test', (req, res) => {
+  const { userId } = req.body;
+  const db = loadDB();
+  const subs = (db.pushSubscriptions && db.pushSubscriptions[userId]) || [];
+
+  if (subs.length === 0) {
+    return res.status(400).json({ error: '등록된 푸시 구독 기기가 없습니다. 먼저 알림 권한을 허용해주세요.' });
+  }
+
+  res.json({ success: true, message: '3초 뒤 백그라운드 푸시가 발송됩니다. 지금 바로 홈 화면으로 나가보세요!' });
+
+  setTimeout(() => {
+    const payload = JSON.stringify({
+      title: '🍡 모키포키 푸시 테스트',
+      body: '축하해요! 백그라운드 웹푸시 알림이 정상적으로 수신되었습니다 ✨',
+      url: '/'
+    });
+
+    subs.forEach(sub => {
+      webpush.sendNotification(sub, payload).catch(err => {
+        console.warn('Test push delivery error:', err.statusCode);
+      });
+    });
+  }, 3000);
 });
 
 const distPath = path.join(__dirname, 'dist');
