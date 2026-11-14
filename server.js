@@ -496,7 +496,6 @@ app.post('/api/messages/send', (req, res) => {
   const isReceiverMuted = !!(db.mutedRooms && db.mutedRooms[receiverMuteKey]);
 
   const pushTriggered = !isReceiverOnline && !isReceiverMuted;
-
   if (pushTriggered && db.pushSubscriptions && db.pushSubscriptions[receiverId]) {
     const sender = db.users.find(u => u.id === senderId);
     const senderName = sender ? sender.name : '친구';
