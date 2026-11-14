@@ -1,3 +1,4 @@
+import webpush from 'web-push';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -496,6 +497,26 @@ app.post('/api/messages/send', (req, res) => {
 
   const pushTriggered = !isReceiverOnline && !isReceiverMuted;
 
+  if (pushTriggered && db.pushSubscriptions && db.pushSubscriptions[receiverId]) {
+    const sender = db.users.find(u => u.id === senderId);
+    const senderName = sender ? sender.name : '친구';
+    const payload = JSON.stringify({
+      title: `🍡 모키포키 - ${senderName}`,
+      body: type === 'bomb' ? '💣 폭탄 메시지가 도착했습니다!' : type === 'jelly_gift' ? '🍇 젤리 선물이 도착했습니다!' : text,
+      url: '/'
+    });
+    
+    db.pushSubscriptions[receiverId].forEach(sub => {
+      webpush.sendNotification(sub, payload).catch(err => {
+        console.warn('Push delivery error:', err.statusCode);
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          db.pushSubscriptions[receiverId] = db.pushSubscriptions[receiverId].filter(s => s.endpoint !== sub.endpoint);
+          saveDB(db);
+        }
+      });
+    });
+  }
+
   res.json({
     success: true,
     message: newMsg,
@@ -547,6 +568,45 @@ app.post('/api/chat/mute', (req, res) => {
 
   saveDB(db);
   res.json({ success: true, isMuted: !!isMuted });
+});
+
+
+// --- WEB PUSH NOTIFICATION SETUP & ENDPOINTS ---
+const initVapid = () => {
+  const db = loadDB();
+  if (!db.vapidKeys) {
+    db.vapidKeys = webpush.generateVAPIDKeys();
+    saveDB(db);
+  }
+  webpush.setVapidDetails(
+    'mailto:khjkr@example.com',
+    db.vapidKeys.publicKey,
+    db.vapidKeys.privateKey
+  );
+};
+initVapid();
+
+app.get('/api/push/vapid-public-key', (req, res) => {
+  const db = loadDB();
+  res.json({ publicKey: db.vapidKeys ? db.vapidKeys.publicKey : null });
+});
+
+app.post('/api/push/subscribe', (req, res) => {
+  const { userId, subscription } = req.body;
+  if (!userId || !subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: '구독 정보가 올바르지 않습니다.' });
+  }
+
+  const db = loadDB();
+  db.pushSubscriptions = db.pushSubscriptions || {};
+  db.pushSubscriptions[userId] = db.pushSubscriptions[userId] || [];
+
+  if (!db.pushSubscriptions[userId].some(s => s.endpoint === subscription.endpoint)) {
+    db.pushSubscriptions[userId].push(subscription);
+  }
+
+  saveDB(db);
+  res.json({ success: true });
 });
 
 const distPath = path.join(__dirname, 'dist');
