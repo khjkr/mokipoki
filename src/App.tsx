@@ -32,7 +32,6 @@ interface ChatMessage {
 }
 
 export default function App() {
-  // Current Authenticated User (Session Persistence via LocalStorage)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem('mokipoki_user');
@@ -42,19 +41,16 @@ export default function App() {
     }
   });
 
-  // Auth Form State
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [loginHandle, setLoginHandle] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   
-  // Registration State
   const [registerStep, setRegisterStep] = useState<'info' | 'character'>('info');
   const [regHandle, setRegHandle] = useState('');
   const [regName, setRegName] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [chosenBase, setChosenBase] = useState<'moki' | 'poki'>('moki');
   
-  // ID duplicate check state
   const [handleCheckStatus, setHandleCheckStatus] = useState<{ checked: boolean; available: boolean; message: string }>({
     checked: false,
     available: false,
@@ -63,7 +59,6 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
-  // App Navigation & Modals
   const [activeTab, setActiveTab] = useState<'friends' | 'chat' | 'store' | 'myhome'>('friends');
   const [isFittingRoomOpen, setIsFittingRoomOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -71,7 +66,6 @@ export default function App() {
   const [friendHandleInput, setFriendHandleInput] = useState('');
   const [friendActionMsg, setFriendActionMsg] = useState('');
 
-  // Push Notification State
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
     return typeof Notification !== 'undefined' ? Notification.permission : 'default';
   });
@@ -79,12 +73,10 @@ export default function App() {
     return localStorage.getItem('mokipoki_push_enabled') === 'true';
   });
 
-  // Friends & Requests Lists
   const [friends, setFriends] = useState<User[]>([]);
   const [sentRequests, setSentRequests] = useState<FriendRequestItem[]>([]);
   const [receivedRequests, setReceivedRequests] = useState<FriendRequestItem[]>([]);
 
-  // Active Chat State
   const [activeFriend, setActiveFriend] = useState<User | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -92,23 +84,19 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Status message edit state
   const [statusInput, setStatusInput] = useState('');
   const [isEditingStatus, setIsEditingStatus] = useState(false);
 
-  // Toast helper
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(''), 3000);
   };
 
-  // 1. Session Persistence & Heartbeat
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('mokipoki_user', JSON.stringify(currentUser));
       setStatusInput(currentUser.statusMsg);
 
-      // Fast Heartbeat every 4 seconds for rapid online reflection
       const hbInterval = setInterval(() => {
         fetch('/api/users/heartbeat', {
           method: 'POST',
@@ -123,7 +111,6 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // 2. Fetch Friends & Requests (Poll every 3.5s for instant avatar and online updates)
   const fetchFriendsAndRequests = async () => {
     if (!currentUser) return;
     try {
@@ -154,7 +141,6 @@ export default function App() {
     }
   }, [currentUser, activeFriend?.id]);
 
-  // 3. Fetch Chat Messages & Mute Status
   const fetchMessages = async () => {
     if (!currentUser || !activeFriend) return;
     try {
@@ -181,9 +167,6 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // ----------------- AUTH HANDLERS -----------------
-
-  // Check Handle Duplicate before moving to character onboarding
   const handleCheckDuplicate = async () => {
     if (!regHandle.trim()) {
       setHandleCheckStatus({ checked: true, available: false, message: '@아이디를 입력해주세요.' });
@@ -207,7 +190,6 @@ export default function App() {
     }
   };
 
-  // Move to Step 2
   const handleGoToCharacterChoice = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -221,7 +203,6 @@ export default function App() {
     }
   };
 
-  // Complete Registration
   const handleCompleteRegister = async () => {
     setAuthLoading(true);
     setAuthError('');
@@ -242,7 +223,7 @@ export default function App() {
         setRegisterStep('info');
       } else {
         setCurrentUser(data.user);
-        showToast(`🎉 ${data.user.name}님 모키포키에 오신 것을 환영해요!`);
+        showToast(`🎉 ${data.user.name}님 환영해요!`);
       }
     } catch (e) {
       setAuthError('서버 연결 실패');
@@ -251,7 +232,6 @@ export default function App() {
     }
   };
 
-  // Login
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!loginHandle.trim()) {
@@ -280,7 +260,6 @@ export default function App() {
     }
   };
 
-  // Quick Login
   const handleQuickLogin = (handle: string) => {
     setLoginHandle(handle);
     setLoginPassword('demo');
@@ -304,7 +283,6 @@ export default function App() {
       .finally(() => setAuthLoading(false));
   };
 
-  // Logout
   const handleLogout = async () => {
     if (!currentUser) return;
     try {
@@ -320,7 +298,6 @@ export default function App() {
     showToast('로그아웃 되었습니다.');
   };
 
-  // Notification Permission
   const handleRequestNotificationPermission = async () => {
     if (typeof Notification === 'undefined') {
       showToast('이 브라우저는 알림을 지원하지 않습니다.');
@@ -347,7 +324,6 @@ export default function App() {
     }
   };
 
-  // Send Friend Request
   const handleSendFriendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || !friendHandleInput.trim()) return;
@@ -372,7 +348,6 @@ export default function App() {
     }
   };
 
-  // Accept Friend Request
   const handleAcceptRequest = async (requestId: string) => {
     if (!currentUser) return;
     try {
@@ -387,11 +362,10 @@ export default function App() {
         showToast('💚 친구 요청을 수락했습니다!');
       }
     } catch (e) {
-      showToast('요청 수락에 실패했습니다.');
+      showToast('요청 수락 실패');
     }
   };
 
-  // Reject Friend Request
   const handleRejectRequest = async (requestId: string) => {
     if (!currentUser) return;
     try {
@@ -405,7 +379,6 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Delete Friend
   const handleDeleteFriend = async (friendId: string, friendName: string) => {
     if (!currentUser) return;
     if (!confirm(`'${friendName}'님을 친구 목록에서 삭제하시겠습니까?`)) return;
@@ -424,11 +397,10 @@ export default function App() {
         showToast('친구 삭제가 완료되었습니다.');
       }
     } catch (e) {
-      showToast('친구 삭제 중 오류가 발생했습니다.');
+      showToast('친구 삭제 오류');
     }
   };
 
-  // Toggle Mute Notification for Chat Room
   const handleToggleMute = async () => {
     if (!currentUser || !activeFriend) return;
     const nextState = !isChatMuted;
@@ -447,7 +419,6 @@ export default function App() {
     }
   };
 
-  // Leave Chat Room
   const handleLeaveChatRoom = async () => {
     if (!currentUser || !activeFriend) return;
     if (!confirm(`'${activeFriend.name}'님과의 대화방을 나가시겠습니까?\n대화 내역이 정리됩니다.`)) return;
@@ -466,7 +437,6 @@ export default function App() {
     }
   };
 
-  // Send Message
   const handleSendMessage = async (type: 'text' | 'bomb' | 'jelly_gift' = 'text') => {
     if (!currentUser || !activeFriend || !chatInput.trim()) return;
 
@@ -497,7 +467,6 @@ export default function App() {
     }
   };
 
-  // Explode Bomb
   const handleExplodeBomb = async (msgId: string) => {
     try {
       await fetch('/api/messages/explode', {
@@ -509,7 +478,6 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Save Status Message
   const handleSaveStatus = async () => {
     if (!currentUser) return;
     try {
@@ -527,7 +495,6 @@ export default function App() {
     } catch (e) {}
   };
 
-  // ----------------- RENDER 1: AUTH GATE -----------------
   if (!currentUser) {
     return (
       <div className="flex flex-col h-screen max-w-md mx-auto bg-gradient-to-b from-[#FFFBEB] via-[#FEF3C7] to-[#FDE68A] text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
@@ -576,7 +543,6 @@ export default function App() {
               </div>
             )}
 
-            {/* LOGIN FORM */}
             {authMode === 'login' && (
               <form onSubmit={handleLogin} className="space-y-3.5">
                 <div>
@@ -631,7 +597,6 @@ export default function App() {
               </form>
             )}
 
-            {/* REGISTER STEP 1 */}
             {authMode === 'register' && registerStep === 'info' && (
               <form onSubmit={handleGoToCharacterChoice} className="space-y-3.5">
                 <div>
@@ -698,7 +663,6 @@ export default function App() {
               </form>
             )}
 
-            {/* REGISTER STEP 2 */}
             {authMode === 'register' && registerStep === 'character' && (
               <div className="space-y-4">
                 <div className="text-center">
@@ -763,17 +727,14 @@ export default function App() {
     );
   }
 
-  // ----------------- RENDER 2: AUTHENTICATED APP -----------------
   return (
     <div className="flex flex-col h-screen max-w-md mx-auto bg-slate-50 text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
-      {/* Toast Notification */}
       {toastMsg && (
         <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-slate-900/90 text-white rounded-2xl shadow-xl text-center text-xs font-bold animate-bounce backdrop-blur">
           {toastMsg}
         </div>
       )}
 
-      {/* TOP HEADER */}
       <header className="px-4 py-3 bg-white/95 backdrop-blur-md border-b border-slate-100 flex items-center justify-between z-20">
         <div className="flex items-center gap-2">
           <span className="text-xl">🍡</span>
@@ -798,12 +759,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* MAIN CONTENT */}
       <main className="flex-1 overflow-y-auto pb-16">
-        {/* TAB 1: FRIENDS */}
         {activeTab === 'friends' && (
           <div className="p-4 space-y-4">
-            {/* My Profile Card */}
             <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
               <div className="relative">
                 <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center overflow-hidden">
@@ -850,7 +808,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* RECEIVED FRIEND REQUESTS */}
             {receivedRequests.length > 0 && (
               <div className="bg-emerald-50/80 border border-emerald-200 rounded-3xl p-4 shadow-sm space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -891,7 +848,6 @@ export default function App() {
               </div>
             )}
 
-            {/* SENT PENDING REQUESTS */}
             {sentRequests.length > 0 && (
               <div className="bg-amber-50/80 border border-amber-200 rounded-3xl p-4 shadow-sm space-y-2.5">
                 <h3 className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
@@ -919,7 +875,6 @@ export default function App() {
               </div>
             )}
 
-            {/* ACCEPTED FRIENDS LIST */}
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-wider">
@@ -992,7 +947,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: CHAT */}
         {activeTab === 'chat' && (
           <div className="h-full flex flex-col">
             {activeFriend ? (
@@ -1148,7 +1102,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3: STORE */}
         {activeTab === 'store' && (
           <div className="p-4 space-y-4">
             <div className="bg-gradient-to-r from-purple-500 to-indigo-600 rounded-3xl p-5 text-white shadow-md">
@@ -1186,7 +1139,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 4: MY HOME */}
         {activeTab === 'myhome' && (
           <div className="p-4 space-y-4">
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 text-center">
@@ -1227,7 +1179,6 @@ export default function App() {
         )}
       </main>
 
-      {/* BOTTOM TAB NAVIGATION */}
       <nav className="absolute bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-slate-100 flex items-center justify-around z-20">
         {[
           { id: 'friends', label: '친구', icon: '👥' },
@@ -1251,7 +1202,6 @@ export default function App() {
         })}
       </nav>
 
-      {/* MODAL: SETTINGS & NOTIFICATIONS */}
       {isSettingsOpen && (
         <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4">
@@ -1333,7 +1283,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: ADD FRIEND REQUEST */}
       {isAddFriendOpen && (
         <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4">
@@ -1379,7 +1328,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: AVATAR FITTING ROOM */}
       {isFittingRoomOpen && (
         <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col justify-end">
           <div className="bg-white rounded-t-3xl p-5 max-h-[85vh] overflow-y-auto space-y-4 shadow-2xl">
