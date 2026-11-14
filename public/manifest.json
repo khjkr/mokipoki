@@ -1,0 +1,16 @@
+{
+  "name": "모키포키 (MokiPoki)",
+  "short_name": "모키포키",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFBF7",
+  "theme_color": "#FFFBF7",
+  "description": "인터랙티브 PWA 소셜 메신저 모키포키",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
