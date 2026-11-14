@@ -1,17 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AvatarRenderer, AvatarConfig, DEFAULT_AVATAR_MOKI, DEFAULT_AVATAR_POKI } from './AvatarRenderer';
+import AvatarRenderer, { AvatarConfig, DEFAULT_MOKI, DEFAULT_POKI } from './AvatarRenderer';
 
-// Interfaces
 interface User {
   id: string;
   handle: string;
   name: string;
+  password?: string;
   statusMsg: string;
   jelly: number;
   ruby: number;
   isOnline: boolean;
   lastSeenAt: string;
   avatar: AvatarConfig;
+}
+
+interface FriendRequestItem {
+  id: string;
+  fromUser?: User;
+  targetUser?: User;
+  createdAt: string;
 }
 
 interface ChatMessage {
@@ -25,316 +32,446 @@ interface ChatMessage {
 }
 
 export default function App() {
-  // 1. MUST START AT NULL: Login / Register Auth Gate appears FIRST on open!
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Current Authenticated User (Session Persistence via LocalStorage)
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem('mokipoki_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
 
-  // Auth Gate Form States
-  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  // Auth Form State
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [loginHandle, setLoginHandle] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  
+  // Registration State
+  const [registerStep, setRegisterStep] = useState<'info' | 'character'>('info');
   const [regHandle, setRegHandle] = useState('');
   const [regName, setRegName] = useState('');
   const [regPassword, setRegPassword] = useState('');
-  const [regStep, setRegStep] = useState<'form' | 'onboarding'>('form');
-  const [onboardingChoice, setOnboardingChoice] = useState<'moki' | 'poki'>('moki');
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [chosenBase, setChosenBase] = useState<'moki' | 'poki'>('moki');
+  
+  // ID duplicate check state
+  const [handleCheckStatus, setHandleCheckStatus] = useState<{ checked: boolean; available: boolean; message: string }>({
+    checked: false,
+    available: false,
+    message: ''
+  });
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
-  // App Navigation
-  const [activeTab, setActiveTab] = useState<'friends' | 'chat' | 'store' | 'profile'>('friends');
-  const [activeChatFriendId, setActiveChatFriendId] = useState<string | null>(null);
+  // App Navigation & Modals
+  const [activeTab, setActiveTab] = useState<'friends' | 'chat' | 'store' | 'myhome'>('friends');
+  const [isFittingRoomOpen, setIsFittingRoomOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAddFriendOpen, setIsAddFriendOpen] = useState(false);
+  const [friendHandleInput, setFriendHandleInput] = useState('');
+  const [friendActionMsg, setFriendActionMsg] = useState('');
 
-  // Real Backend Data States
+  // Push Notification State
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    return typeof Notification !== 'undefined' ? Notification.permission : 'default';
+  });
+  const [pushEnabled, setPushEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('mokipoki_push_enabled') === 'true';
+  });
+
+  // Friends & Requests Lists
   const [friends, setFriends] = useState<User[]>([]);
+  const [sentRequests, setSentRequests] = useState<FriendRequestItem[]>([]);
+  const [receivedRequests, setReceivedRequests] = useState<FriendRequestItem[]>([]);
+
+  // Active Chat State
+  const [activeFriend, setActiveFriend] = useState<User | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [showAddFriend, setShowAddFriend] = useState(false);
-  const [addHandleInput, setAddHandleInput] = useState('');
-  const [showGimmickMenu, setShowGimmickMenu] = useState(false);
-  const [pushToast, setPushToast] = useState<string | null>(null);
-  const [wardrobeAvatar, setWardrobeAvatar] = useState<AvatarConfig>({ ...DEFAULT_AVATAR_MOKI });
-
+  const [chatInput, setChatInput] = useState('');
+  const [isChatMuted, setIsChatMuted] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll chat
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages, activeChatFriendId]);
+  // Status message edit state
+  const [statusInput, setStatusInput] = useState('');
+  const [isEditingStatus, setIsEditingStatus] = useState(false);
 
-  // Sync Wardrobe avatar
+  // Toast helper
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  // 1. Session Persistence & Heartbeat
   useEffect(() => {
     if (currentUser) {
-      setWardrobeAvatar({ ...currentUser.avatar });
+      localStorage.setItem('mokipoki_user', JSON.stringify(currentUser));
+      setStatusInput(currentUser.statusMsg);
+
+      // Fast Heartbeat every 4 seconds for rapid online reflection
+      const hbInterval = setInterval(() => {
+        fetch('/api/users/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUser.id })
+        }).catch(() => {});
+      }, 4000);
+
+      return () => clearInterval(hbInterval);
+    } else {
+      localStorage.removeItem('mokipoki_user');
     }
   }, [currentUser]);
 
-  // Real-time Polling for Friends & Messages (Every 2 seconds)
-  useEffect(() => {
+  // 2. Fetch Friends & Requests (Poll every 3.5s for instant avatar and online updates)
+  const fetchFriendsAndRequests = async () => {
     if (!currentUser) return;
+    try {
+      const res = await fetch(`/api/friends?userId=${currentUser.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setFriends(data.friends || []);
+        setSentRequests(data.sentRequests || []);
+        setReceivedRequests(data.receivedRequests || []);
 
-    const fetchData = async () => {
-      try {
-        // 1. Fetch Friends List
-        const resFriends = await fetch(`/api/friends?userId=${currentUser.id}`);
-        if (resFriends.ok) {
-          const data = await resFriends.json();
-          if (data.friends) setFriends(data.friends);
-        }
-
-        // 2. Fetch Active Chat Messages if in a room
-        if (activeChatFriendId) {
-          const resMsgs = await fetch(`/api/messages?userId=${currentUser.id}&friendId=${activeChatFriendId}`);
-          if (resMsgs.ok) {
-            const data = await resMsgs.json();
-            if (data.messages) setChatMessages(data.messages);
+        if (activeFriend) {
+          const updatedActive = (data.friends || []).find((f: User) => f.id === activeFriend.id);
+          if (updatedActive) {
+            setActiveFriend(updatedActive);
           }
         }
-      } catch (err) {
-        // Fallback for offline/local standalone mode
       }
-    };
-
-    fetchData();
-    const interval = setInterval(fetchData, 2000);
-    return () => clearInterval(interval);
-  }, [currentUser, activeChatFriendId]);
-
-  // -------------------------------------------------------------
-  // AUTH HANDLERS (Connects directly to Backend API)
-  // -------------------------------------------------------------
-  const handleLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    setIsLoading(true);
-
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ handle: loginHandle.trim(), password: loginPassword })
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setAuthError(data.error || '로그인에 실패했습니다.');
-        setIsLoading(false);
-        return;
-      }
-
-      setCurrentUser(data.user);
-      setIsLoading(false);
-      setLoginHandle('');
-      setLoginPassword('');
-    } catch (err) {
-      // Offline fallback: check demo users
-      const cleanHandle = loginHandle.trim().startsWith('@') ? loginHandle.trim() : `@${loginHandle.trim()}`;
-      if (cleanHandle.toLowerCase() === '@hyunjun') {
-        setCurrentUser({
-          id: 'user_hyunjun',
-          handle: '@hyunjun',
-          name: '현준',
-          statusMsg: '모키포키에서 뒹굴거리는 중 🍡',
-          jelly: 320,
-          ruby: 20,
-          isOnline: true,
-          lastSeenAt: '온라인',
-          avatar: { ...DEFAULT_AVATAR_MOKI }
-        });
-      } else if (cleanHandle.toLowerCase() === '@minji') {
-        setCurrentUser({
-          id: 'user_minji',
-          handle: '@minji',
-          name: '민지',
-          statusMsg: '체리 비니 새로 샀음 🍒',
-          jelly: 150,
-          ruby: 5,
-          isOnline: true,
-          lastSeenAt: '온라인',
-          avatar: { ...DEFAULT_AVATAR_POKI }
-        });
-      } else {
-        setAuthError('서버 연결을 확인해주세요. (테스트용 빠른 로그인을 이용할 수도 있습니다)');
-      }
-      setIsLoading(false);
+    } catch (e) {
+      console.warn('Failed to fetch friends:', e);
     }
   };
 
-  const handleRegisterFormSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (currentUser) {
+      fetchFriendsAndRequests();
+      const interval = setInterval(fetchFriendsAndRequests, 3500);
+      return () => clearInterval(interval);
+    }
+  }, [currentUser, activeFriend?.id]);
+
+  // 3. Fetch Chat Messages & Mute Status
+  const fetchMessages = async () => {
+    if (!currentUser || !activeFriend) return;
+    try {
+      const res = await fetch(`/api/messages?userId=${currentUser.id}&friendId=${activeFriend.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setChatMessages(data.messages || []);
+        setIsChatMuted(!!data.isMuted);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch messages:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (activeFriend) {
+      fetchMessages();
+      const interval = setInterval(fetchMessages, 2500);
+      return () => clearInterval(interval);
+    }
+  }, [activeFriend]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  // ----------------- AUTH HANDLERS -----------------
+
+  // Check Handle Duplicate before moving to character onboarding
+  const handleCheckDuplicate = async () => {
+    if (!regHandle.trim()) {
+      setHandleCheckStatus({ checked: true, available: false, message: '@아이디를 입력해주세요.' });
+      return false;
+    }
+    setAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/check-handle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle: regHandle })
+      });
+      const data = await res.json();
+      setHandleCheckStatus({ checked: true, available: !!data.available, message: data.message });
+      setAuthLoading(false);
+      return !!data.available;
+    } catch (e) {
+      setHandleCheckStatus({ checked: true, available: false, message: '중복 확인 통신 오류' });
+      setAuthLoading(false);
+      return false;
+    }
+  };
+
+  // Move to Step 2
+  const handleGoToCharacterChoice = async (e: React.FormEvent) => {
     e.preventDefault();
-    setAuthError(null);
+    setAuthError('');
     if (!regHandle.trim() || !regName.trim()) {
       setAuthError('아이디와 이름을 입력해주세요.');
       return;
     }
-    setRegStep('onboarding');
+    const isAvail = await handleCheckDuplicate();
+    if (isAvail) {
+      setRegisterStep('character');
+    }
   };
 
-  const handleFinishRegister = async () => {
-    setIsLoading(true);
-    setAuthError(null);
-
+  // Complete Registration
+  const handleCompleteRegister = async () => {
+    setAuthLoading(true);
+    setAuthError('');
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          handle: regHandle.trim(),
-          name: regName.trim(),
-          password: regPassword || '1234',
-          baseChoice: onboardingChoice
+          handle: regHandle,
+          name: regName,
+          password: regPassword,
+          baseChoice: chosenBase
         })
       });
       const data = await res.json();
-
-      if (!res.ok) {
-        setAuthError(data.error || '회원가입에 실패했습니다.');
-        setRegStep('form');
-        setIsLoading(false);
-        return;
+      if (!res.ok || !data.success) {
+        setAuthError(data.error || '회원가입 실패');
+        setRegisterStep('info');
+      } else {
+        setCurrentUser(data.user);
+        showToast(`🎉 ${data.user.name}님 모키포키에 오신 것을 환영해요!`);
       }
-
-      setCurrentUser(data.user);
-      setRegStep('form');
-      setRegHandle('');
-      setRegName('');
-      setRegPassword('');
-      setIsLoading(false);
-    } catch (err) {
-      // Local fallback create
-      const cleanHandle = regHandle.trim().startsWith('@') ? regHandle.trim() : `@${regHandle.trim()}`;
-      const fallbackUser: User = {
-        id: 'user_' + Date.now(),
-        handle: cleanHandle,
-        name: regName.trim(),
-        statusMsg: '모키포키 새로 입주했어요 🍡',
-        jelly: 100,
-        ruby: 10,
-        isOnline: true,
-        lastSeenAt: '온라인',
-        avatar: onboardingChoice === 'moki' ? { ...DEFAULT_AVATAR_MOKI } : { ...DEFAULT_AVATAR_POKI }
-      };
-      setCurrentUser(fallbackUser);
-      setRegStep('form');
-      setIsLoading(false);
+    } catch (e) {
+      setAuthError('서버 연결 실패');
+    } finally {
+      setAuthLoading(false);
     }
   };
 
-  const handleQuickLogin = async (handle: string) => {
-    setLoginHandle(handle);
-    setLoginPassword('demo');
-    setIsLoading(true);
+  // Login
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginHandle.trim()) {
+      setAuthError('@아이디를 입력해주세요.');
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError('');
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ handle, password: 'demo' })
+        body: JSON.stringify({ handle: loginHandle, password: loginPassword })
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setAuthError(data.error || '로그인 실패');
+      } else {
         setCurrentUser(data.user);
+        showToast(`환영합니다, ${data.user.name}님! ✨`);
       }
     } catch (e) {
-      if (handle === '@hyunjun') {
-        setCurrentUser({
-          id: 'user_hyunjun',
-          handle: '@hyunjun',
-          name: '현준',
-          statusMsg: '모키포키에서 뒹굴거리는 중 🍡',
-          jelly: 320,
-          ruby: 20,
-          isOnline: true,
-          lastSeenAt: '온라인',
-          avatar: { ...DEFAULT_AVATAR_MOKI }
-        });
-      } else {
-        setCurrentUser({
-          id: 'user_minji',
-          handle: '@minji',
-          name: '민지',
-          statusMsg: '체리 비니 새로 샀음 🍒',
-          jelly: 150,
-          ruby: 5,
-          isOnline: true,
-          lastSeenAt: '온라인',
-          avatar: { ...DEFAULT_AVATAR_POKI }
-        });
-      }
+      setAuthError('서버 연결 실패');
+    } finally {
+      setAuthLoading(false);
     }
-    setIsLoading(false);
   };
 
+  // Quick Login
+  const handleQuickLogin = (handle: string) => {
+    setLoginHandle(handle);
+    setLoginPassword('demo');
+    setAuthLoading(true);
+    setAuthError('');
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle, password: 'demo' })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setCurrentUser(data.user);
+          showToast(`${data.user.name} 계정으로 로그인되었습니다!`);
+        } else {
+          setAuthError(data.error || '로그인 실패');
+        }
+      })
+      .catch(() => setAuthError('로그인 통신 오류'))
+      .finally(() => setAuthLoading(false));
+  };
+
+  // Logout
   const handleLogout = async () => {
-    if (currentUser) {
-      try {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUser.id })
-        });
-      } catch (e) {}
-    }
-    setCurrentUser(null);
-    setActiveChatFriendId(null);
-    setFriends([]);
-    setChatMessages([]);
-  };
-
-  // -------------------------------------------------------------
-  // FRIEND & CHAT ACTIONS
-  // -------------------------------------------------------------
-  const handleAddFriend = async () => {
-    if (!currentUser || !addHandleInput.trim()) return;
+    if (!currentUser) return;
     try {
-      const res = await fetch('/api/friends/add', {
+      await fetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: currentUser.id,
-          targetHandle: addHandleInput.trim()
-        })
+        body: JSON.stringify({ userId: currentUser.id })
+      });
+    } catch (e) {}
+    setCurrentUser(null);
+    setActiveFriend(null);
+    setIsSettingsOpen(false);
+    showToast('로그아웃 되었습니다.');
+  };
+
+  // Notification Permission
+  const handleRequestNotificationPermission = async () => {
+    if (typeof Notification === 'undefined') {
+      showToast('이 브라우저는 알림을 지원하지 않습니다.');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === 'granted') {
+        setPushEnabled(true);
+        localStorage.setItem('mokipoki_push_enabled', 'true');
+        showToast('🔔 웹푸시 알림이 활성화되었습니다!');
+        new Notification('모키포키 알림 켜짐 ✨', {
+          body: '이제 친구가 보낸 메시지와 젤리 선물을 바로 알려드릴게요!',
+          icon: '/favicon.ico'
+        });
+      } else {
+        setPushEnabled(false);
+        localStorage.setItem('mokipoki_push_enabled', 'false');
+        showToast('알림 권한이 거절되었습니다.');
+      }
+    } catch (e) {
+      console.warn('Notification error:', e);
+    }
+  };
+
+  // Send Friend Request
+  const handleSendFriendRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || !friendHandleInput.trim()) return;
+    setFriendActionMsg('');
+    try {
+      const res = await fetch('/api/friends/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, targetHandle: friendHandleInput })
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || '친구 추가에 실패했습니다.');
-        return;
+        setFriendActionMsg(data.error || '친구 요청 실패');
+      } else {
+        setFriendActionMsg(data.message || '친구 요청 완료');
+        setFriendHandleInput('');
+        fetchFriendsAndRequests();
+        showToast('친구 요청이 전송되었습니다! 💌');
       }
-      setFriends(prev => [...prev, data.friend]);
-      setAddHandleInput('');
-      setShowAddFriend(false);
-      alert(`🎉 ${data.friend.name}님을 친구로 추가했습니다!`);
-    } catch (err) {
-      alert('서버와 통신할 수 없습니다.');
+    } catch (e) {
+      setFriendActionMsg('통신 오류가 발생했습니다.');
     }
   };
 
+  // Accept Friend Request
+  const handleAcceptRequest = async (requestId: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch('/api/friends/accept', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, userId: currentUser.id })
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchFriendsAndRequests();
+        showToast('💚 친구 요청을 수락했습니다!');
+      }
+    } catch (e) {
+      showToast('요청 수락에 실패했습니다.');
+    }
+  };
+
+  // Reject Friend Request
+  const handleRejectRequest = async (requestId: string) => {
+    if (!currentUser) return;
+    try {
+      await fetch('/api/friends/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, userId: currentUser.id })
+      });
+      fetchFriendsAndRequests();
+      showToast('친구 요청을 거절했습니다.');
+    } catch (e) {}
+  };
+
+  // Delete Friend
+  const handleDeleteFriend = async (friendId: string, friendName: string) => {
+    if (!currentUser) return;
+    if (!confirm(`'${friendName}'님을 친구 목록에서 삭제하시겠습니까?`)) return;
+
+    try {
+      const res = await fetch('/api/friends/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, friendId })
+      });
+      if (res.ok) {
+        fetchFriendsAndRequests();
+        if (activeFriend?.id === friendId) {
+          setActiveFriend(null);
+        }
+        showToast('친구 삭제가 완료되었습니다.');
+      }
+    } catch (e) {
+      showToast('친구 삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  // Toggle Mute Notification for Chat Room
+  const handleToggleMute = async () => {
+    if (!currentUser || !activeFriend) return;
+    const nextState = !isChatMuted;
+    try {
+      const res = await fetch('/api/chat/mute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, friendId: activeFriend.id, isMuted: nextState })
+      });
+      if (res.ok) {
+        setIsChatMuted(nextState);
+        showToast(nextState ? '🔕 이 대화방의 알림이 음소거되었습니다.' : '🔔 대화방 알림을 켭니다.');
+      }
+    } catch (e) {
+      showToast('음소거 설정 변경 실패');
+    }
+  };
+
+  // Leave Chat Room
+  const handleLeaveChatRoom = async () => {
+    if (!currentUser || !activeFriend) return;
+    if (!confirm(`'${activeFriend.name}'님과의 대화방을 나가시겠습니까?\n대화 내역이 정리됩니다.`)) return;
+
+    try {
+      await fetch('/api/chat/leave', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, friendId: activeFriend.id })
+      });
+      setActiveFriend(null);
+      setChatMessages([]);
+      showToast('대화방에서 나갔습니다.');
+    } catch (e) {
+      showToast('대화방 나가기 실패');
+    }
+  };
+
+  // Send Message
   const handleSendMessage = async (type: 'text' | 'bomb' | 'jelly_gift' = 'text') => {
-    if (!currentUser || !activeChatFriendId) return;
-    if (type === 'text' && !inputText.trim()) return;
+    if (!currentUser || !activeFriend || !chatInput.trim()) return;
 
-    const textToSend = type === 'text'
-      ? inputText.trim()
-      : type === 'bomb'
-      ? '💣 시크릿 폭탄 메시지!'
-      : '🍇 젤리 10개를 선물했습니다!';
-
-    const tempMsg: ChatMessage = {
-      id: 'msg_' + Date.now(),
-      senderId: currentUser.id,
-      receiverId: activeChatFriendId,
-      text: textToSend,
-      timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }),
-      type,
-      isExploded: false
-    };
-
-    setChatMessages(prev => [...prev, tempMsg]);
-    setInputText('');
-    setShowGimmickMenu(false);
-    if (textareaRef.current) textareaRef.current.style.height = '42px';
-
-    // Reward: +1 Jelly
-    setCurrentUser(prev => prev ? { ...prev, jelly: prev.jelly + 1 } : null);
+    const textToSend = chatInput.trim();
+    setChatInput('');
 
     try {
       const res = await fetch('/api/messages/send', {
@@ -342,773 +479,1007 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           senderId: currentUser.id,
-          receiverId: activeChatFriendId,
+          receiverId: activeFriend.id,
           text: textToSend,
           type
         })
       });
+
       const data = await res.json();
-      if (data.pushTriggered) {
-        setPushToast(`📲 [백그라운드 웹푸시 발송] 상대방(${data.receiverName || '친구'})이 오프라인 상태여서 잠금화면으로 알림을 전송했습니다!`);
-        setTimeout(() => setPushToast(null), 3800);
+      if (data.success) {
+        setChatMessages(prev => [...prev, data.message]);
+        if (data.pushTriggered) {
+          showToast('📲 상대방이 오프라인이라 백그라운드 푸시 알림이 발송되었어요!');
+        }
       }
-    } catch (err) {
-      // Local fallback push simulation
-      const activeF = friends.find(f => f.id === activeChatFriendId);
-      if (!activeF?.isOnline) {
-        setPushToast(`📲 [백그라운드 웹푸시 발송] ${activeF?.name}님이 오프라인 상태여서 잠금화면으로 알림을 전송했습니다!`);
-        setTimeout(() => setPushToast(null), 3800);
-      }
+    } catch (e) {
+      showToast('메시지 전송 실패');
     }
   };
 
+  // Explode Bomb
   const handleExplodeBomb = async (msgId: string) => {
-    setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, isExploded: true } : m));
     try {
       await fetch('/api/messages/explode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ msgId })
       });
+      setChatMessages(prev => prev.map(m => m.id === msgId ? { ...m, isExploded: true } : m));
     } catch (e) {}
   };
 
-  const activeFriend = friends.find(f => f.id === activeChatFriendId);
+  // Save Status Message
+  const handleSaveStatus = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch('/api/users/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, statusMsg: statusInput })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentUser(data.user);
+        setIsEditingStatus(false);
+        showToast('상태 메시지가 변경되었습니다 ✨');
+      }
+    } catch (e) {}
+  };
 
-  return (
-    <div className="flex justify-center bg-[#18181B] min-h-screen text-[#2B2321] font-sans antialiased">
-      {/* Mobile PWA Shell (430px) */}
-      <div className="w-full max-w-[430px] min-h-screen bg-[#FFFBF7] flex flex-col shadow-2xl relative overflow-hidden">
-        
-        <style>{`
-          @keyframes avatarFloat {
-            0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-5px); }
-          }
-          .avatar-float { animation: avatarFloat 2.6s ease-in-out infinite; }
-          @keyframes popIn {
-            0% { transform: scale(0.92); opacity: 0; }
-            100% { transform: scale(1); opacity: 1; }
-          }
-          .pop-in { animation: popIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-        `}</style>
-
-        {/* PUSH NOTIFICATION TOAST BANNER */}
-        {pushToast && (
-          <div className="fixed top-14 left-4 right-4 max-w-[400px] mx-auto z-50 bg-[#2B2321] text-white p-3.5 rounded-2xl shadow-2xl border border-[#FF6B6B] text-[13px] leading-snug pop-in flex items-center gap-2.5">
-            <span className="text-[20px]">📲</span>
-            <div className="flex-1 font-medium">{pushToast}</div>
+  // ----------------- RENDER 1: AUTH GATE -----------------
+  if (!currentUser) {
+    return (
+      <div className="flex flex-col h-screen max-w-md mx-auto bg-gradient-to-b from-[#FFFBEB] via-[#FEF3C7] to-[#FDE68A] text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
+        {toastMsg && (
+          <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-slate-900/90 text-white rounded-2xl shadow-xl text-center text-xs font-bold animate-bounce backdrop-blur">
+            {toastMsg}
           </div>
         )}
 
-        {// ==============================================================
-        {/* 1. AUTH GATE SCREEN (Shown when currentUser is NULL) */}
-        {// ==============================================================
-        {!currentUser ? (
-          <div className="flex-1 flex flex-col p-6 justify-between min-h-screen bg-gradient-to-b from-[#FFF5F5] to-[#FFFBF7] pop-in">
-            {regStep === 'form' ? (
-              <>
-                <div className="text-center mt-6">
-                  <div className="text-[52px] animate-bounce mb-1">🍡</div>
-                  <h1 className="text-[26px] font-black text-[#FF6B6B] tracking-tight">
-                    모키포키 (MokiPoki)
-                  </h1>
-                  <p className="text-[13px] text-[#786963] mt-1 font-medium">
-                    내 분신 캐릭터와 함께 떠나는 인터랙티브 메신저
-                  </p>
-                </div>
+        <div className="flex-1 flex flex-col justify-center px-6 py-8 overflow-y-auto">
+          <div className="text-center mb-6">
+            <div className="text-5xl mb-2 filter drop-shadow">🍡</div>
+            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-amber-600 via-orange-500 to-rose-500 bg-clip-text text-transparent">
+              모키포키 (MokiPoki)
+            </h1>
+            <p className="text-xs text-amber-900/70 mt-1 font-medium">
+              내 분신 캐릭터와 함께 떠나는 인터랙티브 메신저
+            </p>
+          </div>
 
-                {/* Error Banner */}
-                {authError && (
-                  <div className="bg-[#FEE2E2] border border-[#FCA5A5] p-3 rounded-2xl text-[12px] text-[#991B1B] font-bold text-center mt-3 pop-in">
-                    {authError}
-                  </div>
-                )}
+          <div className="bg-white/95 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-amber-200">
+            <div className="flex border-b border-amber-100 mb-5">
+              <button
+                type="button"
+                onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                className={`flex-1 py-2 text-center font-bold text-sm transition-all border-b-2 ${
+                  authMode === 'login' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                로그인
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAuthMode('register'); setRegisterStep('info'); setAuthError(''); }}
+                className={`flex-1 py-2 text-center font-bold text-sm transition-all border-b-2 ${
+                  authMode === 'register' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                새 계정 만들기
+              </button>
+            </div>
 
-                {/* Auth Mode Tabs */}
-                <div className="bg-[#F5ECE5] p-1 rounded-2xl flex my-5">
-                  <button
-                    onClick={() => { setAuthTab('login'); setAuthError(null); }}
-                    className={`flex-1 py-2.5 rounded-xl font-bold text-[14px] transition-all ${
-                      authTab === 'login' ? 'bg-white text-[#FF6B6B] shadow-sm' : 'text-[#786963]'
-                    }`}
-                  >
-                    로그인
-                  </button>
-                  <button
-                    onClick={() => { setAuthTab('register'); setAuthError(null); }}
-                    className={`flex-1 py-2.5 rounded-xl font-bold text-[14px] transition-all ${
-                      authTab === 'register' ? 'bg-white text-[#FF6B6B] shadow-sm' : 'text-[#786963]'
-                    }`}
-                  >
-                    새 계정 만들기
-                  </button>
-                </div>
+            {authError && (
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-600 text-xs font-bold rounded-xl text-center">
+                {authError}
+              </div>
+            )}
 
-                {/* Form Body */}
-                {authTab === 'login' ? (
-                  <form onSubmit={handleLoginSubmit} className="space-y-3">
-                    <div>
-                      <label className="text-[12px] font-bold text-[#5C4D47] ml-1">@고유아이디</label>
-                      <input
-                        type="text"
-                        value={loginHandle}
-                        onChange={e => setLoginHandle(e.target.value)}
-                        placeholder="@아이디 입력 (예: @hyunjun)"
-                        required
-                        className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1 font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[12px] font-bold text-[#5C4D47] ml-1">비밀번호</label>
-                      <input
-                        type="password"
-                        value={loginPassword}
-                        onChange={e => setLoginPassword(e.target.value)}
-                        placeholder="비밀번호"
-                        className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={isLoading}
-                      className="w-full py-3.5 rounded-2xl bg-[#FF6B6B] text-white font-extrabold text-[15px] shadow-md mt-2 active:scale-98 disabled:opacity-50"
-                    >
-                      {isLoading ? '로그인 중...' : '모키포키 로그인 ✨'}
-                    </button>
-                  </form>
-                ) : (
-                  <form onSubmit={handleRegisterFormSubmit} className="space-y-3">
-                    <div>
-                      <label className="text-[12px] font-bold text-[#5C4D47] ml-1">사용할 @고유아이디</label>
-                      <input
-                        type="text"
-                        value={regHandle}
-                        onChange={e => setRegHandle(e.target.value)}
-                        placeholder="@아이디 (예: @hyunjun_new)"
-                        required
-                        className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1 font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[12px] font-bold text-[#5C4D47] ml-1">닉네임 / 이름</label>
-                      <input
-                        type="text"
-                        value={regName}
-                        onChange={e => setRegName(e.target.value)}
-                        placeholder="친구들에게 보일 이름"
-                        required
-                        className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[12px] font-bold text-[#5C4D47] ml-1">비밀번호</label>
-                      <input
-                        type="password"
-                        value={regPassword}
-                        onChange={e => setRegPassword(e.target.value)}
-                        placeholder="간단한 비밀번호"
-                        className="w-full bg-white px-4 py-3 rounded-2xl border border-[#FED7AA] text-[14px] outline-none mt-1"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      className="w-full py-3.5 rounded-2xl bg-[#FF6B6B] text-white font-extrabold text-[15px] shadow-md mt-2 active:scale-98"
-                    >
-                      캐릭터 고르러 가기 (2단계) ➡️
-                    </button>
-                  </form>
-                )}
-
-                {/* Quick Account Test Login */}
-                <div className="mt-8 pt-4 border-t border-[#F0E6DE]">
-                  <div className="text-[12px] font-bold text-[#786963] text-center mb-2.5">
-                    🧪 테스트용 빠른 로그인:
-                  </div>
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <button
-                      onClick={() => handleQuickLogin('@hyunjun')}
-                      className="p-3 rounded-2xl bg-white border border-[#FED7AA] flex items-center gap-2.5 shadow-sm active:scale-95 text-left"
-                    >
-                      <AvatarRenderer config={DEFAULT_AVATAR_MOKI} size={36} animated={false} />
-                      <div>
-                        <div className="font-bold text-[13px] text-[#2B2321]">현준 계정</div>
-                        <div className="text-[11px] text-[#FF6B6B]">@hyunjun</div>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => handleQuickLogin('@minji')}
-                      className="p-3 rounded-2xl bg-white border border-[#FED7AA] flex items-center gap-2.5 shadow-sm active:scale-95 text-left"
-                    >
-                      <AvatarRenderer config={DEFAULT_AVATAR_POKI} size={36} animated={false} />
-                      <div>
-                        <div className="font-bold text-[13px] text-[#2B2321]">민지 계정</div>
-                        <div className="text-[11px] text-[#FF6B6B]">@minji</div>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              /* Onboarding Scene: Choose Moki or Poki */
-              <div className="flex-1 flex flex-col items-center justify-between py-4 pop-in">
-                <div className="text-center mt-6">
-                  <span className="text-[11px] font-bold px-3 py-1 rounded-full bg-[#FFE5D9] text-[#E76F51]">
-                    STEP 2 · 캐릭터 선택
-                  </span>
-                  <h2 className="text-[22px] font-black mt-2 text-[#2B2321]">
-                    {regName}님의 단짝 캐릭터를 골라줘! 👯‍♀️
-                  </h2>
-                </div>
-
-                <div className="flex flex-col items-center my-4">
-                  <AvatarRenderer
-                    config={onboardingChoice === 'moki' ? DEFAULT_AVATAR_MOKI : DEFAULT_AVATAR_POKI}
-                    size={200}
-                    animated={true}
+            {/* LOGIN FORM */}
+            {authMode === 'login' && (
+              <form onSubmit={handleLogin} className="space-y-3.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">고유 @아이디</label>
+                  <input
+                    type="text"
+                    placeholder="@hyunjun"
+                    value={loginHandle}
+                    onChange={e => setLoginHandle(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium bg-amber-50/30"
                   />
-                  <div className="mt-3 font-black text-[18px] text-[#FF6B6B]">
-                    {onboardingChoice === 'moki' ? '🍡 순둥 찹쌀떡 모키 (Moki)' : '🐰 장난꾸러기 포키 (Poki)'}
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">비밀번호</label>
+                  <input
+                    type="password"
+                    placeholder="비밀번호를 입력하세요"
+                    value={loginPassword}
+                    onChange={e => setLoginPassword(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium bg-amber-50/30"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full py-3 mt-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-extrabold text-sm shadow-md active:scale-95 transition-all hover:brightness-105"
+                >
+                  {authLoading ? '로그인 확인 중...' : '모키포키 로그인 ✨'}
+                </button>
+
+                <div className="mt-5 pt-4 border-t border-amber-100">
+                  <p className="text-[11px] font-bold text-slate-400 mb-2">🧪 테스트용 빠른 로그인:</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleQuickLogin('@hyunjun')}
+                      className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-left hover:bg-amber-100/80 transition-all"
+                    >
+                      <div className="font-bold text-xs text-amber-900">현준 계정</div>
+                      <div className="text-[10px] text-amber-700">@hyunjun</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickLogin('@minji')}
+                      className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-left hover:bg-amber-100/80 transition-all"
+                    >
+                      <div className="font-bold text-xs text-amber-900">민지 계정</div>
+                      <div className="text-[10px] text-amber-700">@minji</div>
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+
+            {/* REGISTER STEP 1 */}
+            {authMode === 'register' && registerStep === 'info' && (
+              <form onSubmit={handleGoToCharacterChoice} className="space-y-3.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                    @고유아이디 (영문, 숫자)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="@moki_fan"
+                      value={regHandle}
+                      onChange={e => {
+                        setRegHandle(e.target.value);
+                        setHandleCheckStatus({ checked: false, available: false, message: '' });
+                      }}
+                      className="flex-1 px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium bg-amber-50/30"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCheckDuplicate}
+                      disabled={authLoading || !regHandle.trim()}
+                      className="px-3.5 py-2.5 rounded-xl bg-amber-100 text-amber-800 font-bold text-xs hover:bg-amber-200 active:scale-95 transition-all whitespace-nowrap border border-amber-300"
+                    >
+                      중복 확인
+                    </button>
+                  </div>
+                  {handleCheckStatus.checked && (
+                    <p className={`text-[11px] font-bold mt-1.5 ${handleCheckStatus.available ? 'text-emerald-600' : 'text-rose-500'}`}>
+                      {handleCheckStatus.available ? '✅ ' : '❌ '}
+                      {handleCheckStatus.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">이름 (닉네임)</label>
+                  <input
+                    type="text"
+                    placeholder="예: 뽀키마스터"
+                    value={regName}
+                    onChange={e => setRegName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium bg-amber-50/30"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">비밀번호</label>
+                  <input
+                    type="password"
+                    placeholder="비밀번호 설정"
+                    value={regPassword}
+                    onChange={e => setRegPassword(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium bg-amber-50/30"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full py-3 mt-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-extrabold text-sm shadow-md active:scale-95 transition-all hover:brightness-105"
+                >
+                  다음: 분신 캐릭터 선택하기 →
+                </button>
+              </form>
+            )}
+
+            {/* REGISTER STEP 2 */}
+            {authMode === 'register' && registerStep === 'character' && (
+              <div className="space-y-4">
+                <div className="text-center">
+                  <span className="text-[10px] font-extrabold bg-amber-100 text-amber-800 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    Step 2. 캐릭터 선택
+                  </span>
+                  <h3 className="text-base font-extrabold text-slate-800 mt-1">
+                    어떤 분신과 함께 살고 싶나요?
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div
+                    onClick={() => setChosenBase('moki')}
+                    className={`cursor-pointer rounded-2xl p-3 border-2 transition-all flex flex-col items-center ${
+                      chosenBase === 'moki' ? 'border-amber-500 bg-amber-50 shadow-md scale-102' : 'border-slate-200 hover:border-amber-200'
+                    }`}
+                  >
+                    <div className="w-24 h-24 mb-1">
+                      <AvatarRenderer config={DEFAULT_MOKI} size={96} />
+                    </div>
+                    <div className="font-extrabold text-sm text-amber-900">모키 (Moki)</div>
+                    <div className="text-[10px] text-amber-700 text-center">말랑말랑 찹쌀떡 토끼</div>
+                  </div>
+
+                  <div
+                    onClick={() => setChosenBase('poki')}
+                    className={`cursor-pointer rounded-2xl p-3 border-2 transition-all flex flex-col items-center ${
+                      chosenBase === 'poki' ? 'border-amber-500 bg-amber-50 shadow-md scale-102' : 'border-slate-200 hover:border-amber-200'
+                    }`}
+                  >
+                    <div className="w-24 h-24 mb-1">
+                      <AvatarRenderer config={DEFAULT_POKI} size={96} />
+                    </div>
+                    <div className="font-extrabold text-sm text-amber-900">포키 (Poki)</div>
+                    <div className="text-[10px] text-amber-700 text-center">탱글탱글 젤리 고양이</div>
                   </div>
                 </div>
 
-                <div className="w-full space-y-2.5 mb-4">
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <button
-                      onClick={() => setOnboardingChoice('moki')}
-                      className={`py-3 rounded-2xl font-bold text-[14px] border-2 transition-all ${
-                        onboardingChoice === 'moki'
-                          ? 'bg-[#FFE5D9] border-[#E76F51] text-[#E76F51] shadow-sm'
-                          : 'bg-white border-[#E5E7EB] text-[#6B7280]'
-                      }`}
-                    >
-                      🍡 모키 선택
-                    </button>
-                    <button
-                      onClick={() => setOnboardingChoice('poki')}
-                      className={`py-3 rounded-2xl font-bold text-[14px] border-2 transition-all ${
-                        onboardingChoice === 'poki'
-                          ? 'bg-[#FFE5D9] border-[#E76F51] text-[#E76F51] shadow-sm'
-                          : 'bg-white border-[#E5E7EB] text-[#6B7280]'
-                      }`}
-                    >
-                      🐰 포키 선택
-                    </button>
-                  </div>
+                <div className="flex gap-2 pt-2">
                   <button
-                    onClick={handleFinishRegister}
-                    disabled={isLoading}
-                    className="w-full py-4 rounded-2xl bg-[#FF6B6B] text-white font-black text-[16px] shadow-lg active:scale-98"
+                    type="button"
+                    onClick={() => setRegisterStep('info')}
+                    className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs hover:bg-slate-50"
                   >
-                    {isLoading ? '가입 중...' : '이 캐릭터로 입주 완료! ✨'}
+                    ← 이전 단계
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCompleteRegister}
+                    disabled={authLoading}
+                    className="flex-[2] py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-extrabold text-xs shadow-md active:scale-95 transition-all"
+                  >
+                    {authLoading ? '입주 준비 중...' : '모키포키 입주 완료하기 🎉'}
                   </button>
                 </div>
               </div>
             )}
           </div>
-        ) : (
+        </div>
+      </div>
+    );
+  }
 
-        // ==============================================================
-        // 2. AUTHENTICATED REAL APP SHELL
-        // ==============================================================
-          <>
-            {/* TOP HEADER */}
-            <header
-              className="sticky top-0 z-30 bg-[#FFFBF7]/90 backdrop-blur-md px-5 pb-3 border-b border-[#F0E6DE] flex items-center justify-between"
-              style={{ paddingTop: 'max(48px, env(safe-area-inset-top, 48px))' }}
-            >
-              {activeChatFriendId ? (
-                <div className="flex items-center gap-3 w-full">
-                  <button
-                    onClick={() => setActiveChatFriendId(null)}
-                    className="w-9 h-9 rounded-full bg-[#F5ECE5] flex items-center justify-center text-[#2B2321] active:scale-95 transition-transform"
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M15 18l-6-6 6-6" />
-                    </svg>
-                  </button>
-                  <div className="flex items-center gap-2 flex-1">
-                    <AvatarRenderer config={activeFriend?.avatar || DEFAULT_AVATAR_POKI} size={38} animated={false} />
-                    <div>
-                      <div className="font-bold text-[16px] leading-tight flex items-center gap-1.5">
-                        {activeFriend?.name}
-                        {activeFriend?.isOnline ? (
-                          <span className="text-[11px] font-bold text-[#10B981] flex items-center gap-1">
-                            <span className="w-2 h-2 rounded-full bg-[#10B981]" /> 온라인
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-[#9CA3AF]">
-                            ⚪ {activeFriend?.lastSeenAt}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[12px] text-[#8C7A74]">{activeFriend?.handle}</div>
-                    </div>
+  // ----------------- RENDER 2: AUTHENTICATED APP -----------------
+  return (
+    <div className="flex flex-col h-screen max-w-md mx-auto bg-slate-50 text-slate-800 shadow-2xl relative overflow-hidden font-sans select-none">
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-slate-900/90 text-white rounded-2xl shadow-xl text-center text-xs font-bold animate-bounce backdrop-blur">
+          {toastMsg}
+        </div>
+      )}
+
+      {/* TOP HEADER */}
+      <header className="px-4 py-3 bg-white/95 backdrop-blur-md border-b border-slate-100 flex items-center justify-between z-20">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">🍡</span>
+          <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-amber-600 to-rose-500 bg-clip-text text-transparent">
+            모키포키
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-bold text-amber-900">
+            <span>🍇 {currentUser.jelly}</span>
+            <span className="text-slate-300">|</span>
+            <span>💎 {currentUser.ruby}</span>
+          </div>
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-1.5 rounded-full hover:bg-slate-100 text-slate-600 transition-all text-sm"
+            title="설정 및 알림"
+          >
+            ⚙️
+          </button>
+        </div>
+      </header>
+
+      {/* MAIN CONTENT */}
+      <main className="flex-1 overflow-y-auto pb-16">
+        {/* TAB 1: FRIENDS */}
+        {activeTab === 'friends' && (
+          <div className="p-4 space-y-4">
+            {/* My Profile Card */}
+            <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+              <div className="relative">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center overflow-hidden">
+                  <AvatarRenderer config={currentUser.avatar} size={64} />
+                </div>
+                <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <div className="font-extrabold text-sm truncate">{currentUser.name}</div>
+                  <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">
+                    {currentUser.handle}
+                  </span>
+                </div>
+                {isEditingStatus ? (
+                  <div className="flex gap-1 mt-1">
+                    <input
+                      type="text"
+                      value={statusInput}
+                      onChange={e => setStatusInput(e.target.value)}
+                      className="flex-1 text-xs border rounded-lg px-2 py-0.5"
+                    />
+                    <button onClick={handleSaveStatus} className="text-xs bg-amber-500 text-white px-2 py-0.5 rounded-lg font-bold">
+                      저장
+                    </button>
                   </div>
+                ) : (
+                  <div
+                    onClick={() => setIsEditingStatus(true)}
+                    className="text-xs text-slate-500 truncate cursor-pointer hover:text-amber-600 mt-0.5 flex items-center gap-1"
+                  >
+                    <span>{currentUser.statusMsg || '상태 메시지 설정'}</span>
+                    <span className="text-[10px] text-slate-400">✏️</span>
+                  </div>
+                )}
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => setIsFittingRoomOpen(true)}
+                    className="px-2.5 py-1 rounded-xl bg-amber-50 text-amber-800 font-bold text-[11px] border border-amber-200 active:scale-95"
+                  >
+                    꾸미기 ✨
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* RECEIVED FRIEND REQUESTS */}
+            {receivedRequests.length > 0 && (
+              <div className="bg-emerald-50/80 border border-emerald-200 rounded-3xl p-4 shadow-sm space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-extrabold text-emerald-900 flex items-center gap-1.5">
+                    <span>💌</span>
+                    <span>받은 친구 요청 ({receivedRequests.length})</span>
+                  </h3>
+                </div>
+                <div className="space-y-2">
+                  {receivedRequests.map(req => (
+                    <div key={req.id} className="bg-white rounded-2xl p-3 border border-emerald-100 flex items-center justify-between shadow-xs">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center overflow-hidden">
+                          {req.fromUser && <AvatarRenderer config={req.fromUser.avatar} size={40} />}
+                        </div>
+                        <div>
+                          <div className="text-xs font-extrabold text-slate-800">{req.fromUser?.name}</div>
+                          <div className="text-[10px] text-emerald-700">{req.fromUser?.handle}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleAcceptRequest(req.id)}
+                          className="px-2.5 py-1 rounded-xl bg-emerald-500 text-white font-extrabold text-[11px] active:scale-95 shadow-xs"
+                        >
+                          수락 💚
+                        </button>
+                        <button
+                          onClick={() => handleRejectRequest(req.id)}
+                          className="px-2.5 py-1 rounded-xl bg-slate-100 text-slate-600 font-bold text-[11px] hover:bg-slate-200"
+                        >
+                          거절
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* SENT PENDING REQUESTS */}
+            {sentRequests.length > 0 && (
+              <div className="bg-amber-50/80 border border-amber-200 rounded-3xl p-4 shadow-sm space-y-2.5">
+                <h3 className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
+                  <span>⏳</span>
+                  <span>보낸 친구 요청 ({sentRequests.length})</span>
+                </h3>
+                <div className="space-y-2">
+                  {sentRequests.map(req => (
+                    <div key={req.id} className="bg-white rounded-2xl p-3 border border-amber-100 flex items-center justify-between shadow-xs">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center overflow-hidden">
+                          {req.targetUser && <AvatarRenderer config={req.targetUser.avatar} size={40} />}
+                        </div>
+                        <div>
+                          <div className="text-xs font-extrabold text-slate-800">{req.targetUser?.name}</div>
+                          <div className="text-[10px] text-amber-700">{req.targetUser?.handle}</div>
+                        </div>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-xl bg-amber-100 text-amber-800 font-bold text-[10px] border border-amber-200">
+                        수락 대기중 ⏳
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ACCEPTED FRIENDS LIST */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-wider">
+                  내 친구 ({friends.length})
+                </h3>
+                <button
+                  onClick={() => { setIsAddFriendOpen(true); setFriendActionMsg(''); }}
+                  className="px-2.5 py-1 rounded-full bg-amber-500 text-white font-bold text-[11px] shadow-sm hover:brightness-105 active:scale-95"
+                >
+                  + 친구 추가
+                </button>
+              </div>
+
+              {friends.length === 0 ? (
+                <div className="bg-white rounded-3xl p-8 text-center border border-dashed border-slate-200">
+                  <div className="text-3xl mb-1">🐣</div>
+                  <div className="text-xs font-bold text-slate-500">아직 등록된 친구가 없어요.</div>
+                  <div className="text-[11px] text-slate-400 mt-1">상단의 '+ 친구 추가'로 친구를 사귀어보세요!</div>
                 </div>
               ) : (
-                <>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[20px] font-black tracking-tight text-[#FF6B6B] flex items-center gap-1">
-                      🍡 모키포키
-                    </span>
-                    <button
-                      onClick={handleLogout}
-                      className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#4B5563] border border-[#E5E7EB] active:scale-95"
-                    >
-                      로그아웃 🚪
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-2 bg-[#FFF0E6] px-3 py-1 rounded-full border border-[#FED7AA]">
-                    <span className="text-[13px] font-extrabold text-[#D97706]">🍇 {currentUser.jelly}</span>
-                    <span className="text-[11px] text-[#A8A29E]">|</span>
-                    <span className="text-[13px] font-extrabold text-[#EF4444]">💎 {currentUser.ruby}</span>
-                  </div>
-                </>
-              )}
-            </header>
-
-            {/* MAIN CONTENT AREA */}
-            <main className="flex-1 overflow-y-auto px-4 py-4 pb-28">
-
-              {/* ----------------- CHAT ROOM VIEW ----------------- */}
-              {activeChatFriendId ? (
-                <div className="flex flex-col gap-3 min-h-full">
-                  <div className="text-center my-2">
-                    <span className="text-[11px] bg-[#EFE7E1] text-[#786963] px-3 py-1 rounded-full font-medium">
-                      {activeFriend?.name}님과의 대화방입니다
-                    </span>
-                  </div>
-
-                  {chatMessages.map(msg => {
-                    const isMe = msg.senderId === currentUser.id;
-                    const avatar = isMe ? currentUser.avatar : activeFriend?.avatar || DEFAULT_AVATAR_POKI;
-
-                    return (
-                      <div key={msg.id} className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
-                        <AvatarRenderer config={avatar} size={38} animated={false} />
-                        <div className={`max-w-[75%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                          {msg.type === 'bomb' ? (
-                            <div
-                              onClick={() => !msg.isExploded && handleExplodeBomb(msg.id)}
-                              className={`p-3 rounded-2xl cursor-pointer transition-all ${
-                                msg.isExploded
-                                  ? 'bg-[#FEE2E2] border-2 border-dashed border-[#EF4444] text-[#991B1B]'
-                                  : 'bg-gradient-to-r from-[#FF512F] to-[#DD2476] text-white shadow-lg active:scale-95'
-                              }`}
-                            >
-                              {msg.isExploded ? (
-                                <div className="font-bold text-[14px]">💥 펑! 비밀 메시지가 폭파되었습니다!</div>
-                              ) : (
-                                <div className="font-bold text-[14px] flex items-center gap-1.5 animate-pulse">
-                                  💣 탭하여 폭탄 메시지 열기!
-                                </div>
-                              )}
-                            </div>
-                          ) : msg.type === 'jelly_gift' ? (
-                            <div className="bg-[#FEF3C7] border border-[#FCD34D] p-3 rounded-2xl text-[#92400E] font-bold text-[14px] shadow-sm flex items-center gap-2">
-                              <span className="text-[20px]">🍇</span>
-                              <span>{msg.text}</span>
-                            </div>
-                          ) : (
-                            <div
-                              className={`px-4 py-2.5 rounded-[20px] text-[15px] leading-relaxed break-words shadow-sm ${
-                                isMe
-                                  ? 'bg-[#FF6B6B] text-white rounded-br-none'
-                                  : 'bg-white text-[#2B2321] border border-[#EFE5DC] rounded-bl-none'
-                              }`}
-                            >
-                              {msg.text}
-                            </div>
-                          )}
-                          <span className="text-[10px] text-[#A89F91] mt-1 px-1">{msg.timestamp}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div ref={messagesEndRef} />
-                </div>
-              ) : null}
-
-              {/* ----------------- TAB 1: FRIENDS (친구 목록) ----------------- */}
-              {!activeChatFriendId && activeTab === 'friends' && (
-                <div className="flex flex-col gap-4 pop-in">
-                  
-                  {/* My Profile Card */}
-                  <div className="bg-gradient-to-r from-[#FFF0E6] to-[#FFE5D9] p-4 rounded-3xl border border-[#FED7AA] flex items-center gap-4 shadow-sm">
-                    <AvatarRenderer config={currentUser.avatar} size={68} />
-                    <div className="flex-1">
-                      <div className="font-extrabold text-[17px] text-[#2B2321] flex items-center gap-1.5">
-                        {currentUser.name}
-                        <span className="w-2 h-2 rounded-full bg-[#10B981]" />
-                      </div>
-                      <div className="text-[12px] text-[#FF6B6B] font-semibold">{currentUser.handle}</div>
-                      <div className="text-[12px] text-[#786963] mt-0.5">{currentUser.statusMsg}</div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setWardrobeAvatar({ ...currentUser.avatar });
-                        setActiveTab('store');
-                      }}
-                      className="px-3 py-1.5 rounded-full bg-white text-[12px] font-bold text-[#E76F51] border border-[#FED7AA] shadow-sm active:scale-95"
-                    >
-                      꾸미기 ✨
-                    </button>
-                  </div>
-
-                  {/* Friends Header */}
-                  <div className="flex items-center justify-between px-1">
-                    <span className="font-extrabold text-[15px] text-[#5C4D47]">
-                      내 친구 ({friends.length})
-                    </span>
-                    <button
-                      onClick={() => setShowAddFriend(true)}
-                      className="flex items-center gap-1 text-[13px] font-bold text-[#FF6B6B] active:scale-95"
-                    >
-                      <span className="text-[16px]">+</span> 친구 추가
-                    </button>
-                  </div>
-
-                  {/* Friends List */}
-                  <div className="flex flex-col gap-2.5">
-                    {friends.length === 0 ? (
-                      <div className="text-center py-8 text-[#A89F91] text-[13px]">
-                        아직 추가된 친구가 없어요. 상단의 [+ 친구 추가]를 눌러보세요!
-                      </div>
-                    ) : (
-                      friends.map(friend => (
-                        <div
-                          key={friend.id}
-                          onClick={() => setActiveChatFriendId(friend.id)}
-                          className="bg-white p-3.5 rounded-2xl border border-[#F0E6DE] flex items-center gap-3.5 shadow-sm active:bg-[#FFF9F5] transition-colors cursor-pointer"
-                        >
-                          <div className="relative">
-                            <AvatarRenderer config={friend.avatar} size={50} animated={false} />
-                            {friend.isOnline ? (
-                              <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-[#10B981] border-2 border-white rounded-full shadow-sm" />
-                            ) : (
-                              <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-[#D1D5DB] border-2 border-white rounded-full" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-[15px] text-[#2B2321] flex items-center gap-1.5">
-                                {friend.name}
-                                {friend.isOnline ? (
-                                  <span className="text-[10px] font-bold text-[#10B981]">온라인</span>
-                                ) : (
-                                  <span className="text-[10px] text-[#9CA3AF] font-normal">{friend.lastSeenAt}</span>
-                                )}
-                              </span>
-                              <span className="text-[11px] text-[#A89F91]">{friend.handle}</span>
-                            </div>
-                            <div className="text-[12px] text-[#786963] truncate mt-0.5">{friend.statusMsg}</div>
-                          </div>
-                          <button className="w-8 h-8 rounded-full bg-[#FFF0E6] text-[#E76F51] flex items-center justify-center font-bold text-[13px]">
-                            💬
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* ----------------- TAB 2: CHAT LIST ----------------- */}
-              {!activeChatFriendId && activeTab === 'chat' && (
-                <div className="flex flex-col gap-3 pop-in">
-                  <div className="font-extrabold text-[18px] text-[#2B2321] mb-1">채팅 목록</div>
+                <div className="space-y-2">
                   {friends.map(friend => (
                     <div
                       key={friend.id}
-                      onClick={() => setActiveChatFriendId(friend.id)}
-                      className="bg-white p-4 rounded-2xl border border-[#F0E6DE] flex items-center gap-3.5 shadow-sm active:bg-[#FFF9F5] transition-colors cursor-pointer"
+                      className="bg-white rounded-2xl p-3.5 border border-slate-100 flex items-center justify-between hover:border-amber-200 transition-all shadow-xs"
                     >
-                      <div className="relative">
-                        <AvatarRenderer config={friend.avatar} size={50} animated={false} />
-                        {friend.isOnline && (
-                          <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#10B981] border-2 border-white rounded-full" />
-                        )}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative">
+                          <div className="w-12 h-12 rounded-2xl bg-amber-50/50 border border-amber-100 flex items-center justify-center overflow-hidden">
+                            <AvatarRenderer config={friend.avatar} size={48} />
+                          </div>
+                          <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white ${
+                            friend.isOnline ? 'bg-emerald-500' : 'bg-slate-300'
+                          }`} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-extrabold text-xs text-slate-800 truncate">{friend.name}</span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
+                              friend.isOnline ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              {friend.lastSeenAt}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate mt-0.5">{friend.handle}</div>
+                          <div className="text-[11px] text-slate-500 truncate mt-0.5">{friend.statusMsg}</div>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-[16px] text-[#2B2321]">{friend.name}</span>
-                          <span className="text-[11px] text-[#A89F91]">대화 열기</span>
-                        </div>
-                        <div className="text-[13px] text-[#786963] truncate mt-1">
-                          {friend.statusMsg}
-                        </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => { setActiveFriend(friend); setActiveTab('chat'); }}
+                          className="px-2.5 py-1.5 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 font-extrabold text-[11px] hover:bg-amber-100 active:scale-95"
+                        >
+                          💬 대화
+                        </button>
+                        <button
+                          onClick={() => handleDeleteFriend(friend.id, friend.name)}
+                          className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 transition-all text-xs"
+                          title="친구 삭제"
+                        >
+                          🗑️
+                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        )}
 
-              {/* ----------------- TAB 3: STORE & WARDROBE ----------------- */}
-              {!activeChatFriendId && activeTab === 'store' && (
-                <div className="flex flex-col gap-4 pop-in">
-                  <div className="flex items-center justify-between">
-                    <span className="font-extrabold text-[18px]">🛍️ 모키포키 드레스룸</span>
+        {/* TAB 2: CHAT */}
+        {activeTab === 'chat' && (
+          <div className="h-full flex flex-col">
+            {activeFriend ? (
+              <div className="flex flex-col h-full bg-slate-100">
+                <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center justify-between shadow-xs">
+                  <div className="flex items-center gap-2.5">
                     <button
-                      onClick={() => {
-                        setCurrentUser(prev => prev ? { ...prev, avatar: { ...wardrobeAvatar } } : null);
-                        alert('🎉 아바타 코디가 저장되었습니다!');
-                      }}
-                      className="px-4 py-1.5 rounded-full bg-[#FF6B6B] text-white font-extrabold text-[13px] shadow-md active:scale-95"
+                      onClick={() => setActiveFriend(null)}
+                      className="text-slate-400 hover:text-slate-700 text-sm font-bold"
                     >
-                      착용 저장 ✨
+                      ←
                     </button>
-                  </div>
-
-                  <div className="bg-gradient-to-b from-[#FFF0E6] to-[#FFFFFF] p-6 rounded-3xl border-2 border-[#FED7AA] flex flex-col items-center justify-center relative shadow-inner">
-                    <AvatarRenderer config={wardrobeAvatar} size={190} animated={true} />
-                    <div className="mt-2 text-[13px] font-bold text-[#E76F51]">
-                      {wardrobeAvatar.base === 'moki' ? '말랑 찹쌀떡 모키 (Moki)' : '호기심 말썽꾸러기 포키 (Poki)'}
+                    <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 overflow-hidden flex items-center justify-center">
+                      <AvatarRenderer config={activeFriend.avatar} size={32} />
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => setWardrobeAvatar(prev => ({ ...prev, base: 'moki' }))}
-                      className={`py-2.5 rounded-2xl font-bold text-[14px] border transition-all ${
-                        wardrobeAvatar.base === 'moki'
-                          ? 'bg-[#FFE5D9] border-[#E76F51] text-[#E76F51] shadow-sm'
-                          : 'bg-white border-[#E5E7EB] text-[#6B7280]'
-                      }`}
-                    >
-                      🍡 모키 (Moki)
-                    </button>
-                    <button
-                      onClick={() => setWardrobeAvatar(prev => ({ ...prev, base: 'poki' }))}
-                      className={`py-2.5 rounded-2xl font-bold text-[14px] border transition-all ${
-                        wardrobeAvatar.base === 'poki'
-                          ? 'bg-[#FFE5D9] border-[#E76F51] text-[#E76F51] shadow-sm'
-                          : 'bg-white border-[#E5E7EB] text-[#6B7280]'
-                      }`}
-                    >
-                      🐰 포키 (Poki)
-                    </button>
-                  </div>
-
-                  <div className="flex flex-col gap-3">
-                    <div className="font-bold text-[14px] text-[#5C4D47]">😊 표정 파츠</div>
-                    <div className="grid grid-cols-5 gap-2">
-                      {(['smile', 'wink', 'sparkle', 'drowsy', 'silly'] as const).map(face => (
-                        <button
-                          key={face}
-                          onClick={() => setWardrobeAvatar(prev => ({ ...prev, face }))}
-                          className={`p-2 rounded-2xl border text-[12px] font-bold capitalize transition-all ${
-                            wardrobeAvatar.face === face
-                              ? 'bg-[#FF6B6B] text-white border-[#FF6B6B]'
-                              : 'bg-white border-[#E5E7EB] text-[#4B5563]'
-                          }`}
-                        >
-                          {face === 'smile' ? '미소' : face === 'wink' ? '윙크' : face === 'sparkle' ? '반짝' : face === 'drowsy' ? '졸림' : '장난'}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="font-bold text-[14px] text-[#5C4D47] mt-1">👒 모자 & 헤어</div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'cherry_beanie', label: '🍒 체리 비니' },
-                        { id: 'cat_ears', label: '🐱 고양이 귀' },
-                        { id: 'round_glasses', label: '👓 동글 안경' },
-                        { id: 'none', label: '❌ 모자 벗기' }
-                      ].map(item => (
-                        <button
-                          key={item.id}
-                          onClick={() => setWardrobeAvatar(prev => ({ ...prev, headwear: item.id as any }))}
-                          className={`p-2.5 rounded-2xl border text-[13px] font-bold transition-all ${
-                            wardrobeAvatar.headwear === item.id
-                              ? 'bg-[#FF6B6B] text-white border-[#FF6B6B]'
-                              : 'bg-white border-[#E5E7EB] text-[#4B5563]'
-                          }`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="font-bold text-[14px] text-[#5C4D47] mt-1">👕 상의 의상</div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'mint_hoodie', label: '🩵 민트 후드' },
-                        { id: 'yellow_knit', label: '💛 옐로우 니트' },
-                        { id: 'striped_tee', label: '❤️ 줄무늬 티' },
-                        { id: 'none', label: '❌ 기본 옷' }
-                      ].map(item => (
-                        <button
-                          key={item.id}
-                          onClick={() => setWardrobeAvatar(prev => ({ ...prev, top: item.id as any }))}
-                          className={`p-2.5 rounded-2xl border text-[13px] font-bold transition-all ${
-                            wardrobeAvatar.top === item.id
-                              ? 'bg-[#FF6B6B] text-white border-[#FF6B6B]'
-                              : 'bg-white border-[#E5E7EB] text-[#4B5563]'
-                          }`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ----------------- TAB 4: PROFILE ----------------- */}
-              {!activeChatFriendId && activeTab === 'profile' && (
-                <div className="flex flex-col gap-4 pop-in">
-                  <div className="bg-white p-6 rounded-3xl border border-[#F0E6DE] flex flex-col items-center shadow-sm">
-                    <AvatarRenderer config={currentUser.avatar} size={150} animated={true} />
-                    <div className="font-black text-[20px] text-[#2B2321] mt-2">{currentUser.name}</div>
-                    <div className="text-[13px] font-bold text-[#FF6B6B]">{currentUser.handle}</div>
-                    <div className="text-[13px] text-[#786963] mt-1 text-center bg-[#FDF6F0] px-4 py-2 rounded-2xl w-full">
-                      "{currentUser.statusMsg}"
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 w-full mt-4">
-                      <div className="bg-[#FFF8E7] p-3 rounded-2xl border border-[#FDE68A] text-center">
-                        <div className="text-[11px] font-bold text-[#D97706]">내 보유 젤리</div>
-                        <div className="text-[18px] font-black text-[#B45309]">🍇 {currentUser.jelly}</div>
-                      </div>
-                      <div className="bg-[#FEE2E2] p-3 rounded-2xl border border-[#FECACA] text-center">
-                        <div className="text-[11px] font-bold text-[#DC2626]">내 보유 루비</div>
-                        <div className="text-[18px] font-black text-[#B91C1C]">💎 {currentUser.ruby}</div>
+                    <div>
+                      <div className="font-extrabold text-xs text-slate-800">{activeFriend.name}</div>
+                      <div className="text-[10px] flex items-center gap-1">
+                        <span className={`w-1.5 h-1.5 rounded-full ${activeFriend.isOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                        <span className="text-slate-500">{activeFriend.lastSeenAt}</span>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </main>
 
-            {/* CHAT INPUT BAR */}
-            {activeChatFriendId && (
-              <div
-                className="fixed bottom-0 left-0 right-0 max-w-[430px] mx-auto bg-white/95 backdrop-blur-md px-3 pt-2 pb-4 border-t border-[#F0E6DE] z-40"
-                style={{ paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}
-              >
-                {showGimmickMenu && (
-                  <div className="bg-white rounded-2xl p-2.5 mb-2 shadow-xl border border-[#FED7AA] flex gap-2 pop-in">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={handleToggleMute}
+                      className={`px-2 py-1 rounded-xl text-xs font-bold border transition-all ${
+                        isChatMuted ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-slate-50 text-slate-600 border-slate-200'
+                      }`}
+                    >
+                      {isChatMuted ? '🔕 음소거됨' : '🔔 알림'}
+                    </button>
+                    <button
+                      onClick={handleLeaveChatRoom}
+                      className="px-2 py-1 rounded-xl bg-slate-100 text-slate-600 hover:text-rose-600 font-bold text-xs"
+                    >
+                      🚪 나가기
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 p-4 overflow-y-auto space-y-3">
+                  {chatMessages.length === 0 ? (
+                    <div className="text-center py-10 text-xs text-slate-400">
+                      {activeFriend.name}님과의 첫 대화를 시작해보세요! 🍡
+                    </div>
+                  ) : (
+                    chatMessages.map(msg => {
+                      const isMe = msg.senderId === currentUser.id;
+                      return (
+                        <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[75%] rounded-2xl px-3.5 py-2.5 text-xs shadow-xs ${
+                            isMe ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-tr-none' : 'bg-white text-slate-800 border border-slate-100 rounded-tl-none'
+                          }`}>
+                            {msg.type === 'bomb' ? (
+                              <div>
+                                {msg.isExploded ? (
+                                  <span className="italic opacity-60">💥 펑! 폭탄 메시지가 폭발했어요</span>
+                                ) : (
+                                  <div
+                                    onClick={() => handleExplodeBomb(msg.id)}
+                                    className="cursor-pointer font-bold flex items-center gap-1.5 animate-pulse"
+                                  >
+                                    <span>💣 폭탄 메시지: {msg.text}</span>
+                                    <span className="text-[10px] underline">(터뜨리기)</span>
+                                  </div>
+                                )}
+                              </div>
+                            ) : msg.type === 'jelly_gift' ? (
+                              <div className="font-bold flex items-center gap-1">
+                                <span>🍇 젤리 선물: {msg.text}</span>
+                              </div>
+                            ) : (
+                              <div>{msg.text}</div>
+                            )}
+                            <div className={`text-[9px] mt-1 text-right ${isMe ? 'text-amber-100' : 'text-slate-400'}`}>
+                              {msg.timestamp}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                <div className="bg-white p-2.5 border-t border-slate-200">
+                  <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => handleSendMessage('bomb')}
-                      className="flex-1 py-2 rounded-xl bg-gradient-to-r from-[#FF512F] to-[#DD2476] text-white font-bold text-[12px] active:scale-95"
+                      className="p-2 text-sm rounded-xl bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100"
                     >
-                      💣 폭탄 메시지
+                      💣
                     </button>
                     <button
                       onClick={() => handleSendMessage('jelly_gift')}
-                      className="flex-1 py-2 rounded-xl bg-[#FEF3C7] text-[#92400E] font-bold text-[12px] border border-[#FCD34D] active:scale-95"
+                      className="p-2 text-sm rounded-xl bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100"
                     >
-                      🍇 젤리 10개 쏘기
+                      🍇
+                    </button>
+                    <input
+                      type="text"
+                      placeholder="메시지를 입력하세요..."
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleSendMessage('text')}
+                      className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                    <button
+                      onClick={() => handleSendMessage('text')}
+                      disabled={!chatInput.trim()}
+                      className="px-3.5 py-2 bg-amber-500 text-white rounded-xl text-xs font-bold disabled:opacity-40"
+                    >
+                      전송
                     </button>
                   </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 space-y-3">
+                <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-wider">
+                  진행 중인 대화
+                </h3>
+                {friends.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400 text-xs">
+                    대화할 친구를 먼저 추가해주세요.
+                  </div>
+                ) : (
+                  friends.map(friend => (
+                    <div
+                      key={friend.id}
+                      onClick={() => setActiveFriend(friend)}
+                      className="bg-white rounded-2xl p-3 border border-slate-100 flex items-center justify-between hover:border-amber-300 cursor-pointer shadow-xs"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 overflow-hidden flex items-center justify-center">
+                          <AvatarRenderer config={friend.avatar} size={48} />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-xs text-slate-800">{friend.name}</div>
+                          <div className="text-[11px] text-slate-400 truncate mt-0.5">대화방 입장하기</div>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-amber-700 bg-amber-50 px-2 py-1 rounded-xl font-bold">
+                        💬 열기
+                      </div>
+                    </div>
+                  ))
                 )}
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowGimmickMenu(prev => !prev)}
-                    className="w-10 h-10 rounded-full bg-[#FFF0E6] text-[#E76F51] font-black text-[18px] flex items-center justify-center active:scale-95"
-                  >
-                    +
-                  </button>
-                  <textarea
-                    ref={textareaRef}
-                    value={inputText}
-                    onChange={e => {
-                      setInputText(e.target.value);
-                      e.target.style.height = '42px';
-                      e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage('text');
-                      }
-                    }}
-                    placeholder={activeFriend?.isOnline ? "메시지를 입력하세요 (전송 시 젤리 +1)..." : "상대방이 오프라인입니다 (푸시 발송)..."}
-                    rows={1}
-                    className="flex-1 bg-[#F5ECE5] text-[#2B2321] placeholder-[#A89F91] text-[15px] px-4 py-2.5 rounded-2xl outline-none resize-none leading-tight"
-                    style={{ height: '42px', maxHeight: '100px' }}
-                  />
-                  <button
-                    onClick={() => handleSendMessage('text')}
-                    className="w-10 h-10 rounded-full bg-[#FF6B6B] text-white flex items-center justify-center shadow-md active:scale-95"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="19" x2="12" y2="5" />
-                      <polyline points="5 12 12 5 19 12" />
-                    </svg>
-                  </button>
-                </div>
               </div>
             )}
-
-            {/* BOTTOM NAVIGATION BAR */}
-            {!activeChatFriendId && (
-              <nav
-                className="fixed bottom-0 left-0 right-0 max-w-[430px] mx-auto bg-white/95 backdrop-blur-md border-t border-[#F0E6DE] z-30 flex justify-around items-center pt-2"
-                style={{ paddingBottom: 'max(14px, env(safe-area-inset-bottom, 14px))' }}
-              >
-                {[
-                  { id: 'friends', label: '친구', icon: '👥' },
-                  { id: 'chat', label: '채팅', icon: '💬' },
-                  { id: 'store', label: '스토어', icon: '🛍️' },
-                  { id: 'profile', label: '마이홈', icon: '🏠' }
-                ].map(tab => {
-                  const isActive = activeTab === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id as any)}
-                      className={`flex flex-col items-center gap-0.5 px-4 py-1 transition-all ${
-                        isActive ? 'scale-105' : 'opacity-60'
-                      }`}
-                    >
-                      <span className="text-[20px]">{tab.icon}</span>
-                      <span className={`text-[11px] font-bold ${isActive ? 'text-[#FF6B6B]' : 'text-[#786963]'}`}>
-                        {tab.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-            )}
-
-            {/* ADD FRIEND MODAL */}
-            {showAddFriend && (
-              <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-                <div className="bg-white w-full max-w-xs p-5 rounded-3xl shadow-2xl border border-[#FED7AA] pop-in">
-                  <div className="font-extrabold text-[17px] text-[#2B2321] mb-1">새 친구 추가</div>
-                  <div className="text-[12px] text-[#786963] mb-3">인스타그램처럼 @고유아이디를 입력하세요</div>
-                  <input
-                    type="text"
-                    value={addHandleInput}
-                    onChange={e => setAddHandleInput(e.target.value)}
-                    placeholder="@아이디 입력 (예: @minji, @hyunjun)"
-                    className="w-full bg-[#F5ECE5] px-4 py-2.5 rounded-xl text-[14px] outline-none mb-4 font-medium"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowAddFriend(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-[#F3F4F6] text-[#4B5563] font-bold text-[13px]"
-                    >
-                      취소
-                    </button>
-                    <button
-                      onClick={handleAddFriend}
-                      className="flex-1 py-2.5 rounded-xl bg-[#FF6B6B] text-white font-bold text-[13px] shadow-sm"
-                    >
-                      추가하기
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
+          </div>
         )}
 
-      </div>
+        {/* TAB 3: STORE */}
+        {activeTab === 'store' && (
+          <div className="p-4 space-y-4">
+            <div className="bg-gradient-to-r from-purple-500 to-indigo-600 rounded-3xl p-5 text-white shadow-md">
+              <span className="text-[10px] font-bold bg-white/20 px-2 py-0.5 rounded-full uppercase">
+                모키포키 백화점
+              </span>
+              <h2 className="text-lg font-extrabold mt-1">신상 코스튬 컬렉션 🛍️</h2>
+              <p className="text-xs text-purple-100 mt-1">젤리와 루비로 나만의 유니크 아바타를 완성하세요!</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { name: '체리 비니', cost: '🍇 100', icon: '🍒', cat: '모자' },
+                { name: '엔젤 날개', cost: '💎 15', icon: '🪽', cat: '장식' },
+                { name: '게임보이', cost: '🍇 80', icon: '🎮', cat: '손장식' },
+                { name: '하트 풍선', cost: '🍇 50', icon: '🎈', cat: '손장식' }
+              ].map((item, idx) => (
+                <div key={idx} className="bg-white rounded-2xl p-3.5 border border-slate-100 flex flex-col justify-between shadow-xs">
+                  <div>
+                    <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded-md">
+                      {item.cat}
+                    </span>
+                    <div className="text-2xl my-2 text-center">{item.icon}</div>
+                    <div className="font-extrabold text-xs text-slate-800 text-center">{item.name}</div>
+                  </div>
+                  <button
+                    onClick={() => showToast(`${item.name} 구매가 완료되었어요!`)}
+                    className="w-full mt-3 py-1.5 rounded-xl bg-purple-50 text-purple-700 border border-purple-200 text-xs font-bold hover:bg-purple-100 active:scale-95"
+                  >
+                    {item.cost}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: MY HOME */}
+        {activeTab === 'myhome' && (
+          <div className="p-4 space-y-4">
+            <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 text-center">
+              <div className="w-24 h-24 mx-auto mb-2 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center overflow-hidden">
+                <AvatarRenderer config={currentUser.avatar} size={96} />
+              </div>
+              <h2 className="font-extrabold text-base text-slate-800">{currentUser.name}</h2>
+              <p className="text-xs text-amber-700 font-medium">{currentUser.handle}</p>
+              <p className="text-xs text-slate-500 mt-1 italic">"{currentUser.statusMsg}"</p>
+
+              <div className="flex justify-center gap-2 mt-4">
+                <button
+                  onClick={() => setIsFittingRoomOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-white font-extrabold text-xs shadow-sm hover:brightness-105 active:scale-95"
+                >
+                  아바타 드레스룸 ✨
+                </button>
+                <button
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold text-xs hover:bg-slate-200 active:scale-95"
+                >
+                  설정 ⚙️
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-xs">
+                <div className="text-[11px] font-bold text-slate-400">보유 젤리</div>
+                <div className="text-lg font-extrabold text-purple-600 mt-0.5">🍇 {currentUser.jelly}</div>
+              </div>
+              <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-xs">
+                <div className="text-[11px] font-bold text-slate-400">보유 루비</div>
+                <div className="text-lg font-extrabold text-rose-500 mt-0.5">💎 {currentUser.ruby}</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* BOTTOM TAB NAVIGATION */}
+      <nav className="absolute bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-slate-100 flex items-center justify-around z-20">
+        {[
+          { id: 'friends', label: '친구', icon: '👥' },
+          { id: 'chat', label: '채팅', icon: '💬' },
+          { id: 'store', label: '스토어', icon: '🛍️' },
+          { id: 'myhome', label: '마이홈', icon: '🏠' }
+        ].map(tab => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => { setActiveTab(tab.id as any); if (tab.id !== 'chat') setActiveFriend(null); }}
+              className={`flex flex-col items-center justify-center flex-1 py-1 transition-all ${
+                isActive ? 'text-amber-600 font-extrabold scale-105' : 'text-slate-400 font-medium'
+              }`}
+            >
+              <span className="text-lg">{tab.icon}</span>
+              <span className="text-[10px] mt-0.5">{tab.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* MODAL: SETTINGS & NOTIFICATIONS */}
+      {isSettingsOpen && (
+        <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="font-extrabold text-sm text-slate-800 flex items-center gap-1.5">
+                <span>⚙️</span>
+                <span>모키포키 환경 설정</span>
+              </h3>
+              <button onClick={() => setIsSettingsOpen(false)} className="text-slate-400 hover:text-slate-700 font-bold">
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-amber-50/60 rounded-2xl p-3.5 border border-amber-200/70 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-extrabold text-xs text-amber-950">🔔 웹푸시 알림 권한</div>
+                  <div className="text-[10px] text-amber-800/80">
+                    상태: {notificationPermission === 'granted' ? '✅ 허용됨' : notificationPermission === 'denied' ? '❌ 차단됨' : '⚠️ 미설정'}
+                  </div>
+                </div>
+                {notificationPermission !== 'granted' && (
+                  <button
+                    onClick={handleRequestNotificationPermission}
+                    className="px-2.5 py-1.5 rounded-xl bg-amber-500 text-white font-extrabold text-[11px] shadow-xs active:scale-95"
+                  >
+                    권한 허용
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-amber-200/50">
+                <span className="text-xs font-bold text-slate-700">백그라운드 푸시 알림</span>
+                <button
+                  onClick={() => {
+                    if (notificationPermission !== 'granted') {
+                      handleRequestNotificationPermission();
+                    } else {
+                      const next = !pushEnabled;
+                      setPushEnabled(next);
+                      localStorage.setItem('mokipoki_push_enabled', String(next));
+                      showToast(next ? '푸시 알림이 활성화되었습니다.' : '푸시 알림이 비활성화되었습니다.');
+                    }
+                  }}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
+                    pushEnabled ? 'bg-amber-500' : 'bg-slate-300'
+                  }`}
+                >
+                  <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                    pushEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <div className="text-xs font-bold text-slate-600">내 계정 정보</div>
+              <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600 flex justify-between">
+                <span>{currentUser.name} ({currentUser.handle})</span>
+                <span className="text-emerald-600 font-bold">세션 유지 중</span>
+              </div>
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2">
+              <button
+                onClick={handleLogout}
+                className="w-full py-2.5 rounded-xl bg-rose-50 text-rose-600 border border-rose-200 font-extrabold text-xs hover:bg-rose-100"
+              >
+                🚪 로그아웃 (세션 초기화)
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="w-full py-2 text-slate-400 font-bold text-xs"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADD FRIEND REQUEST */}
+      {isAddFriendOpen && (
+        <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="font-extrabold text-sm text-slate-800 flex items-center gap-1">
+                <span>➕</span>
+                <span>친구 요청 보내기</span>
+              </h3>
+              <button onClick={() => setIsAddFriendOpen(false)} className="text-slate-400 hover:text-slate-700 font-bold">
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSendFriendRequest} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  상대방 @아이디 입력
+                </label>
+                <input
+                  type="text"
+                  placeholder="@아이디 (예: @minji)"
+                  value={friendHandleInput}
+                  onChange={e => setFriendHandleInput(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm font-medium"
+                />
+              </div>
+
+              {friendActionMsg && (
+                <div className="p-2.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                  {friendActionMsg}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={!friendHandleInput.trim()}
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-extrabold text-xs shadow-md active:scale-95 disabled:opacity-40"
+              >
+                친구 요청 보내기 💌
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: AVATAR FITTING ROOM */}
+      {isFittingRoomOpen && (
+        <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col justify-end">
+          <div className="bg-white rounded-t-3xl p-5 max-h-[85vh] overflow-y-auto space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="font-extrabold text-sm text-slate-800">아바타 드레스룸 ✨</h3>
+              <button onClick={() => setIsFittingRoomOpen(false)} className="text-slate-400 hover:text-slate-700 font-bold">
+                ✕
+              </button>
+            </div>
+
+            <div className="w-32 h-32 mx-auto rounded-3xl bg-amber-50/70 border border-amber-200 flex items-center justify-center overflow-hidden">
+              <AvatarRenderer config={currentUser.avatar} size={128} />
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <span className="text-xs font-bold text-slate-600">표정</span>
+                <div className="flex gap-2 mt-1.5 overflow-x-auto pb-1">
+                  {(['smile', 'wink', 'sparkle', 'drowsy', 'silly'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => {
+                        const newAv = { ...currentUser.avatar, face: f };
+                        setCurrentUser({ ...currentUser, avatar: newAv });
+                        fetch('/api/users/avatar', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userId: currentUser.id, avatar: newAv })
+                        });
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border whitespace-nowrap ${
+                        currentUser.avatar.face === f ? 'bg-amber-500 text-white border-amber-500' : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs font-bold text-slate-600">상의</span>
+                <div className="flex gap-2 mt-1.5 overflow-x-auto pb-1">
+                  {(['mint_hoodie', 'striped_tee', 'pink_cardigan', 'none'] as const).map(t => (
+                    <button
+                      key={t}
+                      onClick={() => {
+                        const newAv = { ...currentUser.avatar, top: t };
+                        setCurrentUser({ ...currentUser, avatar: newAv });
+                        fetch('/api/users/avatar', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userId: currentUser.id, avatar: newAv })
+                        });
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border whitespace-nowrap ${
+                        currentUser.avatar.top === t ? 'bg-amber-500 text-white border-amber-500' : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs font-bold text-slate-600">모자 / 헤어</span>
+                <div className="flex gap-2 mt-1.5 overflow-x-auto pb-1">
+                  {(['cherry_beanie', 'cat_ears', 'flower_pin', 'none'] as const).map(h => (
+                    <button
+                      key={h}
+                      onClick={() => {
+                        const newAv = { ...currentUser.avatar, headwear: h };
+                        setCurrentUser({ ...currentUser, avatar: newAv });
+                        fetch('/api/users/avatar', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userId: currentUser.id, avatar: newAv })
+                        });
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border whitespace-nowrap ${
+                        currentUser.avatar.headwear === h ? 'bg-amber-500 text-white border-amber-500' : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      {h}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => { setIsFittingRoomOpen(false); showToast('아바타 변경사항이 저장되었습니다! ✨'); }}
+              className="w-full py-3 rounded-xl bg-amber-500 text-white font-extrabold text-xs shadow-md active:scale-95"
+            >
+              드레스룸 닫기
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
