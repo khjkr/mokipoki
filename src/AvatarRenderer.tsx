@@ -348,3 +348,6 @@ export const AvatarRenderer: React.FC<Props> = ({
     </div>
   );
 };
+export const DEFAULT_MOKI = DEFAULT_AVATAR_MOKI;
+export const DEFAULT_POKI = DEFAULT_AVATAR_POKI;
+export default AvatarRenderer;
