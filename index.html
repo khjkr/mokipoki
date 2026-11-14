@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍡</text></svg>" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#FFFBF7" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="모키포키" />
     <title>모키포키 (MokiPoki) - PWA 소셜 메신저</title>
     <!-- Tailwind CSS CDN for instant rendering in preview & dev -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -26,8 +27,37 @@
         }
       }
     </script>
+    <style>
+      /* Safe area insets for iOS PWA */
+      :root {
+        --sat: env(safe-area-inset-top, 0px);
+        --sab: env(safe-area-inset-bottom, 0px);
+        --sal: env(safe-area-inset-left, 0px);
+        --sar: env(safe-area-inset-right, 0px);
+      }
+      body {
+        padding-top: var(--sat);
+        padding-bottom: var(--sab);
+        padding-left: var(--sal);
+        padding-right: var(--sar);
+        background-color: #FFFBF7;
+        -webkit-overflow-scrolling: touch;
+      }
+      /* Prevent iOS PWA WebKit top blur artifact */
+      .ios-pwa-blur-fix {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        transform: translateX(110%);
+        pointer-events: none;
+        z-index: -9999;
+      }
+    </style>
   </head>
-  <body class="bg-[#18181B] m-0 p-0 overflow-x-hidden select-none">
+  <body class="bg-[#FFFBF7] m-0 p-0 overflow-x-hidden select-none">
+    <div class="ios-pwa-blur-fix" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
